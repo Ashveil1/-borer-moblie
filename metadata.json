@@ -1,0 +1,6 @@
+{
+  "name": "Borer",
+  "description": "Autonomous security-testing agent harness with streaming providers, audit trail, persistent notes, CVSS 3.1 reporting, and cross-session memory.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

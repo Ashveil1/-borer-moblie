@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Borer</string>
+    <string name="tab_console">Console</string>
+    <string name="tab_sessions">Sessions</string>
+    <string name="tab_intel">Intel</string>
+    <string name="tab_lab">Lab</string>
+</resources>
