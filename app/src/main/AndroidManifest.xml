@@ -24,6 +24,9 @@
         android:theme="@style/Theme.Borer"
         android:usesCleartextTraffic="true">
         <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
