@@ -9,10 +9,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
-import com.example.MainActivity
 import com.example.ui.screens.AssistantProse
 import com.example.ui.screens.SubtleInfoLine
 import com.example.ui.screens.ThoughtRow
@@ -35,7 +34,7 @@ import org.robolectric.annotation.GraphicsMode
 class UiScreenshotChatRowsTest {
 
     @get:Rule
-    val composeRule = createAndroidComposeRule<MainActivity>()
+    val composeRule = createComposeRule()
 
     @Test
     fun phone_populatedChatRows() {
