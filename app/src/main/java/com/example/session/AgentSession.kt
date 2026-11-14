@@ -46,7 +46,9 @@ data class SessionDeps(
     val extraInstructions: String? = null,
     val ui: UiHooks? = null,
     val shouldStop: () -> Boolean = { false },
-    val initialMessages: List<ChatMessage> = emptyList()
+    val initialMessages: List<ChatMessage> = emptyList(),
+    val initialTotals: Usage = Usage(),
+    val initialContextTokens: Int = 0
 ) {
     val settings: BorerSettings get() = settingsProvider()
 }
@@ -61,9 +63,9 @@ data class RunResult(
 
 class AgentSession(private val deps: SessionDeps) {
     val messages: MutableList<ChatMessage> = mutableListOf()
-    var totals: Usage = Usage()
+    var totals: Usage = deps.initialTotals
         private set
-    var contextTokens: Int = 0
+    var contextTokens: Int = deps.initialContextTokens
         private set
     private var noProgressTurns = 0
     private var consecutiveErrors = 0
@@ -86,7 +88,7 @@ class AgentSession(private val deps: SessionDeps) {
         }
     }
 
-    suspend fun run(userMessage: String, maxTurns: Int = 400): RunResult {
+    suspend fun run(userMessage: String, maxTurns: Int = 400): RunResult = withContext(Dispatchers.IO) {
         finished = false
         finishSummary = ""
         finishOutcome = "exhausted"
@@ -164,9 +166,7 @@ class AgentSession(private val deps: SessionDeps) {
             if (finished) break
         }
 
-        withContext(Dispatchers.IO) {
-            SessionFiles.saveMessages(deps.ctx.runDir, messages.filter { it.role != "system" })
-        }
+        SessionFiles.saveMessages(deps.ctx.runDir, messages.filter { it.role != "system" })
         deps.log.append(
             "run.end",
             mapOf(
@@ -177,7 +177,7 @@ class AgentSession(private val deps: SessionDeps) {
                 "summary" to finishSummary.take(4000)
             )
         )
-        return RunResult(
+        RunResult(
             summary = finishSummary,
             outcome = finishOutcome,
             turns = turns,
@@ -216,6 +216,7 @@ class AgentSession(private val deps: SessionDeps) {
                     val existing = toolCalls[event.index]
                     if (existing != null) {
                         toolCalls[event.index] = existing.copy(
+                            id = event.id.ifEmpty { existing.id },
                             arguments = event.arguments.ifEmpty { existing.arguments },
                             name = event.name.ifEmpty { existing.name }
                         )

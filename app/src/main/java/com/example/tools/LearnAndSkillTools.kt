@@ -1,10 +1,11 @@
 package com.example.tools
 
 import com.example.data.LearningMemory
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 fun learningTool(memory: LearningMemory): Tool = object : Tool {
@@ -29,15 +30,15 @@ fun learningTool(memory: LearningMemory): Tool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        return when (args["action"]?.jsonPrimitive?.contentOrNull.orEmpty()) {
+        return when ((args["action"] as? JsonPrimitive)?.contentOrNull.orEmpty()) {
             "experience" -> {
-                val fp = args["fingerprint"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                val approach = args["approach"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val fp = (args["fingerprint"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                val approach = (args["approach"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
                 if (fp.isEmpty() || approach.isEmpty()) {
                     return ToolResult("experience needs fingerprint and approach", isError = true)
                 }
-                val worked = args["worked"]?.jsonPrimitive?.booleanOrNull == true
-                val outcome = args["outcome"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val worked = (args["worked"] as? JsonPrimitive)?.booleanOrNull == true
+                val outcome = (args["outcome"] as? JsonPrimitive)?.contentOrNull.orEmpty()
                 memory.recordExperience(fp, approach, outcome, worked)
                 ctx.log.append("memory.write", mapOf("action" to "experience", "fingerprint" to fp, "approach" to approach, "worked" to worked))
                 val ranked = memory.experienceFor(fp, 4)
@@ -48,24 +49,24 @@ fun learningTool(memory: LearningMemory): Tool = object : Tool {
                 )
             }
             "technique" -> {
-                val situation = args["situation"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                val steps = args["steps"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val situation = (args["situation"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                val steps = (args["steps"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
                 if (situation.isEmpty() || steps.isEmpty()) {
                     return ToolResult("technique needs situation and steps", isError = true)
                 }
-                val worked = args["worked"]?.jsonPrimitive?.booleanOrNull != false
+                val worked = (args["worked"] as? JsonPrimitive)?.booleanOrNull != false
                 memory.recordTechnique(situation, steps, worked)
                 ctx.log.append("memory.write", mapOf("action" to "technique", "situation" to situation))
                 ToolResult("technique saved: when $situation -> ${steps.take(120)}")
             }
             "target" -> {
-                val host = args["host"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                val host = (args["host"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
                 if (host.isEmpty()) return ToolResult("target needs host", isError = true)
                 memory.noteTarget(
                     host = host,
-                    profile = args["profile"]?.jsonPrimitive?.contentOrNull,
-                    finding = args["finding"]?.jsonPrimitive?.contentOrNull,
-                    deadEnd = args["deadEnd"]?.jsonPrimitive?.contentOrNull
+                    profile = (args["profile"] as? JsonPrimitive)?.contentOrNull,
+                    finding = (args["finding"] as? JsonPrimitive)?.contentOrNull,
+                    deadEnd = (args["deadEnd"] as? JsonPrimitive)?.contentOrNull
                 )
                 ctx.log.append("memory.write", mapOf("action" to "target", "host" to host))
                 val h = memory.targetHistory(host)
@@ -146,16 +147,17 @@ fun skillTool(skills: List<BorerSkill>): Tool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val wanted = args["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val wanted = (args["name"] as? JsonPrimitive)?.contentOrNull.orEmpty()
         val skill = skills.firstOrNull { it.name == wanted }
             ?: return ToolResult(
                 "no skill named $wanted. available: ${skills.joinToString(", ") { it.name }.ifBlank { "(none)" }}",
                 isError = true
             )
-        val relFile = args["file"]?.jsonPrimitive?.contentOrNull
+        val relFile = (args["file"] as? JsonPrimitive)?.contentOrNull
         if (!relFile.isNullOrBlank()) {
-            val target = File(skill.dir, relFile).canonicalFile
-            if (!target.path.startsWith(skill.dir.canonicalPath)) {
+            val skillRoot = skill.dir.canonicalFile
+            val target = File(skillRoot, relFile).canonicalFile
+            if (!target.toPath().startsWith(skillRoot.toPath())) {
                 return ToolResult("path escapes the skill directory", isError = true)
             }
             if (!target.exists() || !target.isFile) {

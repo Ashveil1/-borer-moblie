@@ -47,20 +47,27 @@ class ArtifactStore(
     }
 
     fun get(id: String): ArtifactRef? {
-        index[id]?.let { return it }
-        val file = File(dir, id)
+        val cleanId = id.trim()
+        if (cleanId.isEmpty() || cleanId == "." || cleanId == ".." || cleanId.contains('/') || cleanId.contains('\\')) {
+            return null
+        }
+        index[cleanId]?.let { return it }
+        val file = File(dir, cleanId)
+        val baseCanonical = runCatching { dir.canonicalFile.toPath() }.getOrNull() ?: return null
+        val targetCanonical = runCatching { file.canonicalFile.toPath() }.getOrNull() ?: return null
+        if (!targetCanonical.startsWith(baseCanonical) || targetCanonical == baseCanonical) return null
         if (!file.exists() || !file.isFile) return null
         val text = file.readText(Charsets.UTF_8)
         val ref = ArtifactRef(
-            id = id,
+            id = cleanId,
             kind = "unknown",
-            label = id,
+            label = cleanId,
             bytes = file.length(),
             lines = if (text.isEmpty()) 0 else text.count { it == '\n' } + 1,
             preview = text.take(previewBytes),
             path = file.absolutePath
         )
-        index[id] = ref
+        index[cleanId] = ref
         return ref
     }
 

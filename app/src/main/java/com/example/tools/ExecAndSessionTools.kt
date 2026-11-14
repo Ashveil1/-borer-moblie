@@ -13,9 +13,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -38,11 +38,11 @@ val bashTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        val command = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val command = (args["command"] as? JsonPrimitive)?.contentOrNull.orEmpty()
         if (command.isBlank()) return@withContext ToolResult("error: empty command", isError = true)
-        val cwd = args["cwd"]?.jsonPrimitive?.contentOrNull?.let { File(it) } ?: ctx.workdir
-        val timeoutMs = (args["timeout_ms"]?.jsonPrimitive?.intOrNull ?: 120_000).coerceIn(500, 1_800_000).toLong()
-        val stdinText = args["stdin"]?.jsonPrimitive?.contentOrNull
+        val cwd = (args["cwd"] as? JsonPrimitive)?.contentOrNull?.let { File(it) } ?: ctx.workdir
+        val timeoutMs = ((args["timeout_ms"] as? JsonPrimitive)?.intOrNull ?: 120_000).coerceIn(500, 1_800_000).toLong()
+        val stdinText = (args["stdin"] as? JsonPrimitive)?.contentOrNull
 
         val tmpDir = File(ctx.runDir, "tmp").apply { mkdirs() }
         val logFile = File(tmpDir, "bash-${System.currentTimeMillis()}.log")
@@ -100,8 +100,9 @@ class BackgroundJobs(
         val id: String,
         val logFile: File,
         val process: Process? = null,
-        val coroutineJob: kotlinx.coroutines.Job? = null,
-        var exitCode: Int? = null
+        @Volatile var coroutineJob: kotlinx.coroutines.Job? = null,
+        @Volatile var exitCode: Int? = null,
+        @Volatile var killed: Boolean = false
     )
 
     init {
@@ -143,12 +144,14 @@ class BackgroundJobs(
             val runner = scope.launch(Dispatchers.IO) {
                 val res = UbuntuProotRuntime.exec(appContext, command, workdir, env, 1_800_000L, null, settings)
                 logFile.writeText(res.output)
-                val code = res.exitCode ?: -1
-                jobEntry.exitCode = code
-                db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
-                log.append("tool.result", mapOf("job" to id, "exitCode" to code))
+                if (!jobEntry.killed) {
+                    val code = res.exitCode ?: -1
+                    jobEntry.exitCode = code
+                    db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
+                    log.append("tool.result", mapOf("job" to id, "exitCode" to code))
+                }
             }
-            live[id] = jobEntry.copy(coroutineJob = runner)
+            jobEntry.coroutineJob = runner
         } else {
             val pb = UbuntuProotRuntime.buildProcessBuilder(appContext, command, workdir, env, settings)
                 .getOrElse {
@@ -160,12 +163,15 @@ class BackgroundJobs(
             val proc = pb.start()
             val job = LiveJob(id = id, logFile = logFile, process = proc)
             live[id] = job
-            scope.launch(Dispatchers.IO) {
+            val runner = scope.launch(Dispatchers.IO) {
                 val code = proc.waitFor()
-                job.exitCode = code
-                db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
-                log.append("tool.result", mapOf("job" to id, "exitCode" to code))
+                if (!job.killed) {
+                    job.exitCode = code
+                    db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
+                    log.append("tool.result", mapOf("job" to id, "exitCode" to code))
+                }
             }
+            job.coroutineJob = runner
         }
         StartedJob(id = id, pid = 0L, log = logFile.absolutePath)
     }
@@ -179,6 +185,7 @@ class BackgroundJobs(
     override fun poll(id: String): JobPollResult {
         val l = live[id]
         if (l != null) {
+            if (l.killed) return JobPollResult("killed", l.exitCode ?: -1)
             val code = l.exitCode
             val status = when (code) {
                 null -> "running"
@@ -193,6 +200,7 @@ class BackgroundJobs(
 
     override fun kill(id: String) {
         val l = live[id] ?: return
+        l.killed = true
         l.process?.destroyForcibly()
         l.coroutineJob?.cancel()
         l.exitCode = -1
@@ -219,11 +227,11 @@ val jobTool = object : Tool {
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
         val jobs = ctx.jobs ?: return ToolResult("error: background jobs are not enabled in this session", isError = true)
-        return when (val action = args["action"]?.jsonPrimitive?.contentOrNull.orEmpty()) {
+        return when (val action = (args["action"] as? JsonPrimitive)?.contentOrNull.orEmpty()) {
             "start" -> {
-                val cmd = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val cmd = (args["command"] as? JsonPrimitive)?.contentOrNull.orEmpty()
                 if (cmd.isBlank()) return ToolResult("error: command is required", isError = true)
-                val started = jobs.start(args["name"]?.jsonPrimitive?.contentOrNull ?: "job", cmd)
+                val started = jobs.start((args["name"] as? JsonPrimitive)?.contentOrNull ?: "job", cmd)
                 ToolResult("started ${started.id} log=${started.log}")
             }
             "list" -> {
@@ -234,10 +242,10 @@ val jobTool = object : Tool {
                 )
             }
             else -> {
-                val id = args["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val id = (args["id"] as? JsonPrimitive)?.contentOrNull.orEmpty()
                 if (id.isEmpty()) return ToolResult("error: id is required", isError = true)
                 when (action) {
-                    "tail" -> ToolResult(jobs.tail(id, args["lines"]?.jsonPrimitive?.intOrNull ?: 80))
+                    "tail" -> ToolResult(jobs.tail(id, (args["lines"] as? JsonPrimitive)?.intOrNull ?: 80))
                     "poll" -> {
                         val st = jobs.poll(id)
                         ToolResult("$id: ${st.status}${st.exitCode?.let { " exit=$it" } ?: ""}")
@@ -266,7 +274,7 @@ val sessionTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: "list"
+        val action = (args["action"] as? JsonPrimitive)?.contentOrNull ?: "list"
         val snapRoot = File(ctx.runDir, "snapshots")
         if (action == "list") {
             val dirs = snapRoot.listFiles()?.map { it.name }.orEmpty()
@@ -277,12 +285,18 @@ val sessionTool = object : Tool {
                 "run dir: ${ctx.runDir.absolutePath}\nartifacts: ${ctx.artifacts.list().size}\nnotes: ${ctx.store.digest()}"
             )
         }
-        val label = (args["label"]?.jsonPrimitive?.contentOrNull ?: Instant.now().toString().replace(':', '-')).take(40)
+        val rawLabel = (args["label"] as? JsonPrimitive)?.contentOrNull
+            ?: Instant.now().toString().replace(':', '-')
+        val label = rawLabel
+            .replace(Regex("[^a-zA-Z0-9._-]+"), "-")
+            .trim('-', '.')
+            .take(40)
+            .ifBlank { Instant.now().toString().replace(':', '-').take(24) }
         if (action == "snapshot") {
             val dir = File(snapRoot, label).apply { mkdirs() }
             val artSrc = File(ctx.runDir, "artifacts")
             if (artSrc.exists()) artSrc.copyRecursively(File(dir, "artifacts"), overwrite = true)
-            val msgStr = args["messages"]?.jsonPrimitive?.contentOrNull
+            val msgStr = (args["messages"] as? JsonPrimitive)?.contentOrNull
             if (!msgStr.isNullOrBlank()) {
                 runCatching { Json.parseToJsonElement(msgStr) }.getOrElse {
                     return ToolResult("error: messages must be valid JSON", isError = true)

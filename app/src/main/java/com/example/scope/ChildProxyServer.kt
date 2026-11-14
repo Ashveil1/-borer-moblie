@@ -89,8 +89,8 @@ class ChildProxyServer(
         clientOut: OutputStream
     ) {
         val started = System.currentTimeMillis()
-        val host = authority.substringBefore(':').removePrefix("[").removeSuffix("]")
-        val port = authority.substringAfter(':', "443").toIntOrNull() ?: 443
+        val (host, parsedPort) = splitAuthority(authority)
+        val port = parsedPort ?: 443
         val decision = runBlocking { gate.check(host = host) }
         if (!decision.ok) {
             log.append("tool.denied", mapOf("tool" to "proxy", "host" to authority, "reason" to decision.reason))
@@ -135,6 +135,7 @@ class ChildProxyServer(
                 }
                 total
             }.getOrDefault(0L)
+            runCatching { clientIn.close() }
             runCatching { t1.join(1000) }
             gate.recordSuccess(host)
             log.appendHttp(
@@ -161,10 +162,14 @@ class ChildProxyServer(
         val started = System.currentTimeMillis()
         val uri = runCatching { URI(rawUrl) }.getOrNull()
         val hostHeader = headers["host"].orEmpty()
-        val resolvedUrl = if (uri?.scheme != null) rawUrl else "http://$hostHeader$rawUrl"
+        val resolvedUrl = if (uri?.scheme != null) rawUrl else {
+            val suffix = if (rawUrl.startsWith("/")) rawUrl else "/$rawUrl"
+            "http://$hostHeader$suffix"
+        }
         val parsed = runCatching { URI(resolvedUrl) }.getOrNull()
-        val host = parsed?.host ?: hostHeader.substringBefore(':')
-        val port = if ((parsed?.port ?: -1) > 0) parsed!!.port else 80
+        val (hdrHost, hdrPort) = splitAuthority(hostHeader)
+        val host = parsed?.host?.removePrefix("[")?.removeSuffix("]") ?: hdrHost
+        val port = if ((parsed?.port ?: -1) > 0) parsed!!.port else (hdrPort ?: 80)
 
         val decision = runBlocking { gate.check(url = resolvedUrl) }
         if (!decision.ok) {
@@ -187,9 +192,8 @@ class ChildProxyServer(
                 val rOut = remote.getOutputStream()
                 val headerBlock = buildString {
                     append("$method $path $httpVersion\r\n")
-                    headers.filterKeys { it != "proxy-connection" }.forEach { (k, v) ->
-                        append("$k: $v\r\n")
-                    }
+                    headers.filterKeys { it != "proxy-connection" && it != "connection" && it != "keep-alive" }
+                        .forEach { (k, v) -> append("$k: $v\r\n") }
                     append("connection: close\r\n\r\n")
                 }
                 rOut.write(headerBlock.toByteArray(Charsets.ISO_8859_1))
@@ -263,6 +267,27 @@ class ChildProxyServer(
             offset += read
         }
         return if (offset == capped) buf else buf.copyOf(offset)
+    }
+
+    private fun splitAuthority(authority: String): Pair<String, Int?> {
+        val trimmed = authority.trim()
+        if (trimmed.startsWith("[")) {
+            val closeIdx = trimmed.indexOf(']')
+            if (closeIdx > 1) {
+                val host = trimmed.substring(1, closeIdx)
+                val rest = trimmed.substring(closeIdx + 1)
+                val port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull() else null
+                return host to port
+            }
+        }
+        val firstColon = trimmed.indexOf(':')
+        val lastColon = trimmed.lastIndexOf(':')
+        return if (firstColon != -1 && firstColon == lastColon) {
+            val p = trimmed.substring(lastColon + 1).toIntOrNull()
+            if (p != null) trimmed.substring(0, lastColon) to p else trimmed to null
+        } else {
+            trimmed.removePrefix("[").removeSuffix("]") to null
+        }
     }
 
     override fun close() {

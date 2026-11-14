@@ -53,20 +53,21 @@ import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.SpaceGroteskFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 object ToolSummaryFormatter {
     private val json = Json { ignoreUnknownKeys = true }
 
     fun summarize(name: String, rawArguments: String): String {
-        val obj = runCatching { json.parseToJsonElement(rawArguments).jsonObject }.getOrNull()
+        val obj = runCatching { json.parseToJsonElement(rawArguments) as? JsonObject }.getOrNull()
         if (obj == null) {
             return rawArguments.replace('\n', ' ').trim().take(48)
         }
         fun str(vararg keys: String): String? = keys.firstNotNullOfOrNull { k ->
-            obj[k]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+            (obj[k] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
         }
 
         val summary = when (name) {
@@ -97,15 +98,21 @@ object ToolSummaryFormatter {
             "learn" -> listOfNotNull(str("action"), str("host", "situation", "fingerprint")).joinToString(" · ")
             "recall" -> listOfNotNull(str("action"), str("id"), str("pattern")).joinToString(" · ")
             "transform" -> listOfNotNull(str("op", "operation"), str("input")?.take(24)).joinToString(" · ")
-            "mutate" -> listOfNotNull(str("kind", "context"), str("payload")?.take(24)).joinToString(" · ")
-            "diff" -> str("mode").orEmpty()
+            "mutate" -> {
+                val rules = (obj["rules"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                    ?.joinToString(",")
+                    ?.takeIf { it.isNotEmpty() }
+                listOfNotNull(str("seed", "payload")?.take(24), rules ?: str("kind", "context")).joinToString(" · ")
+            }
+            "diff" -> listOfNotNull(str("a")?.take(20), str("b")?.take(20)).joinToString(" vs ").ifBlank { str("mode").orEmpty() }
             "scope" -> listOfNotNull(str("action"), str("host", "target", "url")).joinToString(" · ")
             "job" -> listOfNotNull(str("action"), str("id"), str("command")).joinToString(" · ")
             "session" -> listOfNotNull(str("action"), str("label")).joinToString(" · ")
             "skill" -> str("name", "action").orEmpty()
-            "todo" -> listOfNotNull(str("action"), str("item", "task")).joinToString(" · ")
+            "todo" -> listOfNotNull(str("action"), str("text", "id", "item", "task")).joinToString(" · ")
             "finish" -> str("outcome", "summary").orEmpty()
-            else -> obj.values.firstOrNull()?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            else -> obj.values.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { s -> s.isNotEmpty() } }.orEmpty()
         }
 
         return summary.replace('\n', ' ').replace(Regex("\\s+"), " ").trim().take(64)

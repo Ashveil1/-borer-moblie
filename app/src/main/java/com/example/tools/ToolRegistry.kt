@@ -7,9 +7,9 @@ import com.example.data.RunDatabase
 import com.example.data.RunStore
 import com.example.runtime.ShellExecResult
 import com.example.scope.EngagementGate
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -20,6 +20,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 interface JobRegistry {
     suspend fun start(name: String, command: String): StartedJob
@@ -62,35 +63,80 @@ private suspend fun defaultLocalShellExec(
     stdin: String?
 ): ShellExecResult = withContext(Dispatchers.IO) {
     var proc: Process? = null
+    var readerThread: Thread? = null
+    var stdinThread: Thread? = null
     try {
-        val pb = ProcessBuilder("/system/bin/sh", "-c", command)
+        val shellBin = if (File("/system/bin/sh").exists()) "/system/bin/sh" else "/bin/sh"
+        val pb = ProcessBuilder(shellBin, "-c", command)
             .directory(cwd)
             .redirectErrorStream(true)
         env.forEach { (k, v) -> pb.environment()[k] = v }
         val started = pb.start()
         proc = started
-        if (stdin != null) started.outputStream.bufferedWriter().use { it.write(stdin) } else started.outputStream.close()
-        coroutineScope {
-            val outDeferred = async(Dispatchers.IO) {
-                runCatching { started.inputStream.bufferedReader().use { it.readText() } }.getOrDefault("")
+        val outputLock = Any()
+        val outputBuf = java.io.ByteArrayOutputStream()
+        readerThread = Thread {
+            runCatching {
+                val buf = ByteArray(4096)
+                val stream = started.inputStream
+                while (!Thread.currentThread().isInterrupted) {
+                    val n = stream.read(buf)
+                    if (n < 0) break
+                    if (n > 0) synchronized(outputLock) { outputBuf.write(buf, 0, n) }
+                }
             }
-            val finished = withTimeoutOrNull(timeoutMs.coerceAtLeast(500L)) {
-                started.waitFor()
-                true
-            } != null
-            if (!finished) {
-                started.destroyForcibly()
-                val partial = withTimeoutOrNull(500L) { outDeferred.await() } ?: ""
-                outDeferred.cancel()
-                ShellExecResult(null, partial, timedOut = true)
-            } else {
-                val output = withTimeoutOrNull(1_000L) { outDeferred.await() } ?: ""
-                ShellExecResult(started.exitValue(), output, timedOut = false)
-            }
+        }.apply {
+            isDaemon = true
+            start()
         }
+        stdinThread = Thread {
+            runCatching {
+                if (stdin != null) {
+                    started.outputStream.bufferedWriter().use { it.write(stdin) }
+                } else {
+                    started.outputStream.close()
+                }
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+        val finished = withTimeoutOrNull(timeoutMs.coerceAtLeast(100L)) {
+            while (!started.waitFor(50, TimeUnit.MILLISECONDS)) {
+                if (!isActive) break
+            }
+            true
+        } == true
+        if (finished && isActive && !started.isAlive) {
+            runCatching { stdinThread.join(500) }
+            runCatching { readerThread.join(1_000) }
+            val output = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+            ShellExecResult(started.exitValue(), output, timedOut = false)
+        } else {
+            started.destroyForcibly()
+            runCatching { started.waitFor(200, TimeUnit.MILLISECONDS) }
+            runCatching { started.inputStream.close() }
+            runCatching { started.outputStream.close() }
+            stdinThread.interrupt()
+            readerThread.interrupt()
+            runCatching { readerThread.join(200) }
+            val partial = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+            ShellExecResult(null, partial, timedOut = true)
+        }
+    } catch (e: CancellationException) {
+        proc?.destroyForcibly()
+        throw e
     } catch (t: Throwable) {
         proc?.destroyForcibly()
         ShellExecResult(null, "[spawn error] ${t.message}")
+    } finally {
+        if (proc?.isAlive == true) {
+            runCatching { proc.destroyForcibly() }
+        }
+        runCatching { proc?.inputStream?.close() }
+        runCatching { proc?.outputStream?.close() }
+        stdinThread?.interrupt()
+        readerThread?.interrupt()
     }
 }
 
@@ -152,8 +198,10 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
             }
         }
         return try {
-            val res = tool.run(args, ctx)
+            val res = withContext(Dispatchers.IO) { tool.run(args, ctx) }
             ToolExecutionResult(res.content, res.isError, System.currentTimeMillis() - started)
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
             ToolExecutionResult(
                 content = "error: ${tool.name} threw: ${t::class.simpleName}: ${t.message}",

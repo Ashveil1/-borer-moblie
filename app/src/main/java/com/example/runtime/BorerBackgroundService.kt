@@ -181,8 +181,10 @@ class BorerBackgroundService : Service() {
             }
             ACTION_RELEASE_WAKELOCK -> {
                 BackgroundKeepAliveController.onReleaseWakeLock?.invoke()
-                stopForegroundAndSelf()
-                return START_NOT_STICKY
+                if (!BackgroundKeepAliveController.snapshot.value.shouldKeepServiceRunning) {
+                    stopForegroundAndSelf()
+                    return START_NOT_STICKY
+                }
             }
             else -> {
                 if (!snap.shouldKeepServiceRunning) {

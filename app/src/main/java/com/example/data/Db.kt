@@ -11,6 +11,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -73,9 +75,13 @@ data class NoteEntity(
     val updatedAt: String
 )
 
-@Entity(tableName = "artifacts", indices = [Index(value = ["runId"])])
+@Entity(
+    tableName = "artifacts",
+    primaryKeys = ["id", "runId"],
+    indices = [Index(value = ["runId"])]
+)
 data class ArtifactEntity(
-    @PrimaryKey val id: String,
+    val id: String,
     val runId: String,
     val kind: String,
     val label: String,
@@ -178,8 +184,8 @@ interface ArtifactDao {
     @Query("SELECT * FROM artifacts WHERE runId = :runId ORDER BY createdAt ASC")
     fun listArtifactsSync(runId: String): List<ArtifactEntity>
 
-    @Query("SELECT * FROM artifacts WHERE id = :id LIMIT 1")
-    fun getArtifactSync(id: String): ArtifactEntity?
+    @Query("SELECT * FROM artifacts WHERE id = :id AND runId = :runId LIMIT 1")
+    fun getArtifactSync(id: String, runId: String): ArtifactEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun upsertSync(artifact: ArtifactEntity)
@@ -249,7 +255,7 @@ interface JobDao {
         FindingEntity::class,
         JobEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class RunDatabase : RoomDatabase() {
@@ -263,13 +269,39 @@ abstract class RunDatabase : RoomDatabase() {
         @Volatile
         private var instance: RunDatabase? = null
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `artifacts_new` (
+                        `id` TEXT NOT NULL,
+                        `runId` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `bytes` INTEGER NOT NULL,
+                        `lines` INTEGER NOT NULL,
+                        `path` TEXT NOT NULL,
+                        `createdAt` TEXT NOT NULL,
+                        PRIMARY KEY(`id`, `runId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "INSERT OR IGNORE INTO `artifacts_new` (`id`, `runId`, `kind`, `label`, `bytes`, `lines`, `path`, `createdAt`) SELECT `id`, `runId`, `kind`, `label`, `bytes`, `lines`, `path`, `createdAt` FROM `artifacts`"
+                )
+                db.execSQL("DROP TABLE `artifacts`")
+                db.execSQL("ALTER TABLE `artifacts_new` RENAME TO `artifacts`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_artifacts_runId` ON `artifacts` (`runId`)")
+            }
+        }
+
         fun get(context: Context): RunDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     RunDatabase::class.java,
                     "borer_runs.db"
-                ).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
             }
     }
 }

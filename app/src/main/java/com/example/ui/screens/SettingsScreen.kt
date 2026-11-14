@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import java.net.URI
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -220,6 +221,7 @@ private fun ProvidersSettingsPane(
                     }
                     CleanPrimaryButton(
                         onClick = {
+                            vm.clearProviderTestResult()
                             editingIndex = null
                             editingInitial = null
                             editorOpen = true
@@ -245,6 +247,7 @@ private fun ProvidersSettingsPane(
                             label = "+ ${preset.label}",
                             selected = false,
                             onClick = {
+                                vm.clearProviderTestResult()
                                 editingIndex = null
                                 editingInitial = ProviderProfile(
                                     id = preset.name,
@@ -398,6 +401,7 @@ private fun ProvidersSettingsPane(
                         Spacer(Modifier.width(8.dp))
                         CleanOutlinedButton(
                             onClick = {
+                                vm.clearProviderTestResult()
                                 editingIndex = idx
                                 editingInitial = p
                                 editorOpen = true
@@ -484,8 +488,12 @@ private fun ProvidersSettingsPane(
             testing = testing,
             testResult = testResult,
             onTest = { draft -> vm.testProviderConnection(draft) },
-            onDismiss = { editorOpen = false },
+            onDismiss = {
+                vm.clearProviderTestResult()
+                editorOpen = false
+            },
             onSave = { profile ->
+                vm.clearProviderTestResult()
                 vm.upsertProvider(profile, editingIndex)
                 editorOpen = false
                 onFeedback("Saved provider '${profile.name}'")
@@ -526,12 +534,15 @@ private fun ProviderEditorDialog(
     var showValidation by remember { mutableStateOf(false) }
 
     val trimmedUrl = baseUrl.trim()
-    val urlValid = trimmedUrl.startsWith("http://", ignoreCase = true) ||
-        trimmedUrl.startsWith("https://", ignoreCase = true)
+    val parsedUri = runCatching { URI(trimmedUrl) }.getOrNull()
+    val urlSchemeOk = parsedUri?.scheme?.equals("http", ignoreCase = true) == true ||
+        parsedUri?.scheme?.equals("https", ignoreCase = true) == true
     val urlError = when {
         trimmedUrl.isBlank() -> "Base URL is required"
-        !urlValid -> "Must start with http:// or https://"
-        trimmedUrl.removePrefix("https://").removePrefix("http://").isBlank() -> "Enter a valid host"
+        trimmedUrl.any { it.isWhitespace() } -> "URL cannot contain spaces"
+        !trimmedUrl.startsWith("http://", ignoreCase = true) &&
+            !trimmedUrl.startsWith("https://", ignoreCase = true) -> "Must start with http:// or https://"
+        !urlSchemeOk || parsedUri?.host.isNullOrBlank() -> "Enter a valid URL host"
         else -> null
     }
     val modelError = if (model.isBlank()) "Model ID is required" else null

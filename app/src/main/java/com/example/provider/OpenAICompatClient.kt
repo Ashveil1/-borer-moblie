@@ -3,6 +3,7 @@ package com.example.provider
 import com.example.data.ProviderProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -11,15 +12,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -48,6 +48,9 @@ class OpenAICompatClient(
 
     private val client: OkHttpClient = sharedHttpClient
 
+    private fun JsonElement?.asStr(): String? = (this as? JsonPrimitive)?.contentOrNull
+    private fun JsonElement?.asInt(): Int? = (this as? JsonPrimitive)?.intOrNull
+
     suspend fun catalog(): List<ModelCatalogEntry> = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("$normalizedBaseUrl/models")
@@ -56,21 +59,31 @@ class OpenAICompatClient(
             .get()
             .build()
 
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) {
-                throw ProviderException("/models failed (${res.code})", res.code, false)
+        val call = client.newCall(req)
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { res ->
+                if (!res.isSuccessful) {
+                    throw ProviderException("/models failed (${res.code})", res.code, false)
+                }
+                val text = res.body?.string().orEmpty()
+                val root = json.parseToJsonElement(text)
+                val data = when (root) {
+                    is JsonArray -> root
+                    is JsonObject -> (root["data"] as? JsonArray) ?: (root["models"] as? JsonArray) ?: JsonArray(emptyList())
+                    else -> JsonArray(emptyList())
+                }
+                data.mapNotNull { el ->
+                    val item = el as? JsonObject ?: return@mapNotNull null
+                    val id = item["id"].asStr() ?: return@mapNotNull null
+                    val ctx = item["context_length"].asInt()
+                        ?: item["max_model_len"].asInt()
+                        ?: item["max_context_length"].asInt()
+                    ModelCatalogEntry(id = id, context = ctx)
+                }
             }
-            val text = res.body?.string().orEmpty()
-            val obj = json.parseToJsonElement(text).jsonObject
-            val data = obj["data"]?.jsonArray ?: JsonArray(emptyList())
-            data.mapNotNull { el ->
-                val item = el.jsonObject
-                val id = item["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val ctx = item["context_length"]?.jsonPrimitive?.intOrNull
-                    ?: item["max_model_len"]?.jsonPrimitive?.intOrNull
-                    ?: item["max_context_length"]?.jsonPrimitive?.intOrNull
-                ModelCatalogEntry(id = id, context = ctx)
-            }
+        } finally {
+            cancelHandle?.dispose()
         }
     }
 
@@ -114,188 +127,193 @@ class OpenAICompatClient(
             .build()
 
         val call = client.newCall(httpReq)
-        call.execute().use { res ->
-            if (!res.isSuccessful) {
-                val errBody = runCatching { res.body?.string().orEmpty() }.getOrDefault("")
-                throw ProviderException(
-                    "${if (isResponses) "responses" else "chat/completions"} failed (${res.code}) ${errBody.take(400)}",
-                    status = res.code,
-                    retryable = res.code in RETRYABLE_STATUS,
-                    responseBody = errBody.take(4000)
-                )
-            }
-            val body = res.body ?: throw ProviderException("empty response body", res.code, true)
-            val source = body.source()
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { res ->
+                if (!res.isSuccessful) {
+                    val errBody = runCatching { res.body?.string().orEmpty() }.getOrDefault("")
+                    throw ProviderException(
+                        "${if (isResponses) "responses" else "chat/completions"} failed (${res.code}) ${errBody.take(400)}",
+                        status = res.code,
+                        retryable = res.code in RETRYABLE_STATUS,
+                        responseBody = errBody.take(4000)
+                    )
+                }
+                val body = res.body ?: throw ProviderException("empty response body", res.code, true)
+                val source = body.source()
 
-            val toolCalls = linkedMapOf<Int, MutableToolCall>()
-            val responseItemIdx = linkedMapOf<String, Int>()
-            var nextRespIdx = 0
-            var emittedTools = false
+                val toolCalls = linkedMapOf<Int, MutableToolCall>()
+                val responseItemIdx = linkedMapOf<String, Int>()
+                var nextRespIdx = 0
+                var emittedTools = false
+                var pendingFinishReason: String? = null
 
-            while (!source.exhausted() && coroutineContext.isActive) {
-                val rawLine = source.readUtf8Line() ?: break
-                val line = rawLine.trim()
-                if (line.isEmpty() || line.startsWith(":")) continue
-                if (!line.startsWith("data:")) continue
-                val data = line.removePrefix("data:").trim()
-                if (data == "[DONE]") {
-                    if (!emittedTools) {
-                        for ((index, tc) in toolCalls) {
-                            emittedTools = true
-                            emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                while (!source.exhausted() && coroutineContext.isActive) {
+                    val rawLine = source.readUtf8Line() ?: break
+                    val line = rawLine.trim()
+                    if (line.isEmpty() || line.startsWith(":")) continue
+                    if (!line.startsWith("data:")) continue
+                    val data = line.removePrefix("data:").trim()
+                    if (data == "[DONE]") {
+                        if (!emittedTools) {
+                            for ((index, tc) in toolCalls) {
+                                emittedTools = true
+                                emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                            }
                         }
+                        emit(ProviderEvent.Done(pendingFinishReason ?: "stop"))
+                        return@flow
                     }
-                    emit(ProviderEvent.Done("stop"))
-                    return@flow
-                }
 
-                val chunk = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
-                chunk["error"]?.let { errEl ->
-                    val errMsg = (errEl as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull ?: "unknown"
-                    throw ProviderException("provider error: $errMsg", null, false, errEl.toString())
-                }
+                    val chunk = runCatching { json.parseToJsonElement(data) as? JsonObject }.getOrNull() ?: continue
+                    val errEl = chunk["error"]?.takeIf { it !is JsonNull }
+                    if (errEl != null) {
+                        val errMsg = (errEl as? JsonObject)?.get("message").asStr() ?: errEl.asStr() ?: errEl.toString()
+                        throw ProviderException("provider error: $errMsg", null, false, errEl.toString())
+                    }
 
-                if (isResponses) {
-                    val evType = chunk["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    when (evType) {
-                        "response.output_text.delta" -> {
-                            chunk["delta"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let {
-                                emit(ProviderEvent.Text(it))
-                            }
-                        }
-                        "response.reasoning_summary_text.delta" -> {
-                            chunk["delta"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let {
-                                emit(ProviderEvent.Reasoning(it))
-                            }
-                        }
-                        "response.output_item.added" -> {
-                            val item = chunk["item"] as? JsonObject
-                            if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
-                                val itemId = item["id"]?.jsonPrimitive?.contentOrNull ?: "fc_$nextRespIdx"
-                                val callId = item["call_id"]?.jsonPrimitive?.contentOrNull ?: itemId
-                                val name = item["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val idx = responseItemIdx.getOrPut(itemId) { nextRespIdx++ }
-                                val acc = toolCalls.getOrPut(idx) { MutableToolCall(id = callId, name = name) }
-                                if (callId.isNotEmpty()) acc.id = callId
-                                if (name.isNotEmpty()) acc.name = name
-                                emit(ProviderEvent.ToolCall(idx, acc.id, acc.name, ""))
-                            }
-                        }
-                        "response.function_call_arguments.delta" -> {
-                            val itemId = chunk["item_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                            val idx = responseItemIdx[itemId] ?: 0
-                            val deltaArgs = chunk["delta"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                            if (deltaArgs.isNotEmpty()) {
-                                toolCalls.getOrPut(idx) { MutableToolCall() }.arguments.append(deltaArgs)
-                            }
-                        }
-                        "response.output_item.done" -> {
-                            val item = chunk["item"] as? JsonObject
-                            if (item?.get("type")?.jsonPrimitive?.contentOrNull == "function_call") {
-                                val itemId = item["id"]?.jsonPrimitive?.contentOrNull ?: "fc_$nextRespIdx"
-                                val callId = item["call_id"]?.jsonPrimitive?.contentOrNull ?: itemId
-                                val name = item["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val args = item["arguments"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val idx = responseItemIdx.getOrPut(itemId) { nextRespIdx++ }
-                                val acc = toolCalls.getOrPut(idx) { MutableToolCall(id = callId, name = name) }
-                                if (callId.isNotEmpty()) acc.id = callId
-                                if (name.isNotEmpty()) acc.name = name
-                                if (acc.arguments.isEmpty() && args.isNotEmpty()) {
-                                    acc.arguments.append(args)
+                    if (isResponses) {
+                        val evType = chunk["type"].asStr().orEmpty()
+                        when (evType) {
+                            "response.output_text.delta" -> {
+                                chunk["delta"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+                                    emit(ProviderEvent.Text(it))
                                 }
                             }
-                        }
-                        "response.failed", "error" -> {
-                            val errObj = (chunk["response"] as? JsonObject)?.get("error") as? JsonObject
-                                ?: chunk["error"] as? JsonObject
-                            val msg = errObj?.get("message")?.jsonPrimitive?.contentOrNull
-                                ?: chunk["message"]?.jsonPrimitive?.contentOrNull
-                                ?: "responses stream failed"
-                            throw ProviderException(msg, null, false, chunk.toString().take(2000))
-                        }
-                        "response.completed" -> {
-                            val respObj = chunk["response"] as? JsonObject
-                            (respObj?.get("usage") as? JsonObject)?.let { u ->
-                                val inputTok = u["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                val outputTok = u["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                                val cached = (u["input_tokens_details"] as? JsonObject)
-                                    ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                                val total = u["total_tokens"]?.jsonPrimitive?.intOrNull ?: (inputTok + outputTok)
-                                emit(ProviderEvent.UsageUpdate(Usage(inputTok, outputTok, cached, total)))
-                            }
-                            if (!emittedTools) {
-                                for ((index, tc) in toolCalls) {
-                                    emittedTools = true
-                                    emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                            "response.reasoning_summary_text.delta" -> {
+                                chunk["delta"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+                                    emit(ProviderEvent.Reasoning(it))
                                 }
                             }
-                            emit(ProviderEvent.Done("stop"))
-                            return@flow
+                            "response.output_item.added" -> {
+                                val item = chunk["item"] as? JsonObject
+                                if (item?.get("type").asStr() == "function_call") {
+                                    val itemId = item?.get("id").asStr() ?: "fc_$nextRespIdx"
+                                    val callId = item?.get("call_id").asStr() ?: itemId
+                                    val name = item?.get("name").asStr().orEmpty()
+                                    val idx = responseItemIdx.getOrPut(itemId) { nextRespIdx++ }
+                                    val acc = toolCalls.getOrPut(idx) { MutableToolCall(id = callId, name = name) }
+                                    if (callId.isNotEmpty()) acc.id = callId
+                                    if (name.isNotEmpty()) acc.name = name
+                                    emit(ProviderEvent.ToolCall(idx, acc.id, acc.name, ""))
+                                }
+                            }
+                            "response.function_call_arguments.delta" -> {
+                                val itemId = chunk["item_id"].asStr().orEmpty()
+                                val idx = responseItemIdx[itemId] ?: 0
+                                val deltaArgs = chunk["delta"].asStr().orEmpty()
+                                if (deltaArgs.isNotEmpty()) {
+                                    toolCalls.getOrPut(idx) { MutableToolCall() }.arguments.append(deltaArgs)
+                                }
+                            }
+                            "response.output_item.done" -> {
+                                val item = chunk["item"] as? JsonObject
+                                if (item?.get("type").asStr() == "function_call") {
+                                    val itemId = item?.get("id").asStr() ?: "fc_$nextRespIdx"
+                                    val callId = item?.get("call_id").asStr() ?: itemId
+                                    val name = item?.get("name").asStr().orEmpty()
+                                    val args = item?.get("arguments").asStr().orEmpty()
+                                    val idx = responseItemIdx.getOrPut(itemId) { nextRespIdx++ }
+                                    val acc = toolCalls.getOrPut(idx) { MutableToolCall(id = callId, name = name) }
+                                    if (callId.isNotEmpty()) acc.id = callId
+                                    if (name.isNotEmpty()) acc.name = name
+                                    if (acc.arguments.isEmpty() && args.isNotEmpty()) {
+                                        acc.arguments.append(args)
+                                    }
+                                }
+                            }
+                            "response.failed", "error" -> {
+                                val errObj = (chunk["response"] as? JsonObject)?.get("error") as? JsonObject
+                                    ?: chunk["error"] as? JsonObject
+                                val msg = errObj?.get("message").asStr()
+                                    ?: chunk["message"].asStr()
+                                    ?: "responses stream failed"
+                                throw ProviderException(msg, null, false, chunk.toString().take(2000))
+                            }
+                            "response.completed" -> {
+                                val respObj = chunk["response"] as? JsonObject
+                                (respObj?.get("usage") as? JsonObject)?.let { u ->
+                                    val inputTok = u["input_tokens"].asInt() ?: 0
+                                    val outputTok = u["output_tokens"].asInt() ?: 0
+                                    val cached = (u["input_tokens_details"] as? JsonObject)
+                                        ?.get("cached_tokens").asInt() ?: 0
+                                    val total = u["total_tokens"].asInt() ?: (inputTok + outputTok)
+                                    emit(ProviderEvent.UsageUpdate(Usage(inputTok, outputTok, cached, total)))
+                                }
+                                if (!emittedTools) {
+                                    for ((index, tc) in toolCalls) {
+                                        emittedTools = true
+                                        emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                                    }
+                                }
+                                emit(ProviderEvent.Done("stop"))
+                                return@flow
+                            }
                         }
+                        continue
                     }
-                    continue
-                }
 
-                chunk["usage"]?.let { usageEl ->
-                    (usageEl as? JsonObject)?.let { u ->
-                        val prompt = u["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0
-                        val completion = u["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+                    (chunk["usage"] as? JsonObject)?.let { u ->
+                        val prompt = u["prompt_tokens"].asInt() ?: 0
+                        val completion = u["completion_tokens"].asInt() ?: 0
                         val cached = (u["prompt_tokens_details"] as? JsonObject)
-                            ?.get("cached_tokens")?.jsonPrimitive?.intOrNull ?: 0
-                        val total = u["total_tokens"]?.jsonPrimitive?.intOrNull ?: (prompt + completion)
+                            ?.get("cached_tokens").asInt() ?: 0
+                        val total = u["total_tokens"].asInt() ?: (prompt + completion)
                         emit(ProviderEvent.UsageUpdate(Usage(prompt, completion, cached, total)))
                     }
-                }
 
-                val choice = (chunk["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: continue
-                val delta = choice["delta"] as? JsonObject ?: JsonObject(emptyMap())
+                    val choice = (chunk["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: continue
+                    val delta = choice["delta"] as? JsonObject ?: JsonObject(emptyMap())
 
-                delta["content"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }?.let {
-                    emit(ProviderEvent.Text(it))
-                }
-                val reasoning = delta["reasoning_content"]?.jsonPrimitive?.contentOrNull
-                    ?: delta["reasoning"]?.jsonPrimitive?.contentOrNull
-                if (!reasoning.isNullOrEmpty()) {
-                    emit(ProviderEvent.Reasoning(reasoning))
-                }
-
-                (delta["tool_calls"] as? JsonArray)?.forEach { tcEl ->
-                    val tcObj = tcEl as? JsonObject ?: return@forEach
-                    val index = tcObj["index"]?.jsonPrimitive?.intOrNull ?: 0
-                    val id = tcObj["id"]?.jsonPrimitive?.contentOrNull
-                    val fnObj = tcObj["function"] as? JsonObject
-                    val name = fnObj?.get("name")?.jsonPrimitive?.contentOrNull
-                    val args = fnObj?.get("arguments")?.jsonPrimitive?.contentOrNull.orEmpty()
-
-                    val acc = toolCalls.getOrPut(index) { MutableToolCall() }
-                    if (!id.isNullOrEmpty()) acc.id = id
-                    if (!name.isNullOrEmpty()) acc.name = name
-                    if (args.isNotEmpty()) acc.arguments.append(args)
-
-                    if (!id.isNullOrEmpty()) {
-                        emit(ProviderEvent.ToolCall(index, acc.id, acc.name, ""))
+                    delta["content"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+                        emit(ProviderEvent.Text(it))
                     }
-                }
+                    val reasoning = delta["reasoning_content"].asStr()
+                        ?: delta["reasoning"].asStr()
+                    if (!reasoning.isNullOrEmpty()) {
+                        emit(ProviderEvent.Reasoning(reasoning))
+                    }
 
-                val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-                if (!finishReason.isNullOrEmpty()) {
-                    if (!emittedTools) {
-                        for ((index, tc) in toolCalls) {
-                            emittedTools = true
-                            emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                    (delta["tool_calls"] as? JsonArray)?.forEach { tcEl ->
+                        val tcObj = tcEl as? JsonObject ?: return@forEach
+                        val index = tcObj["index"].asInt() ?: 0
+                        val id = tcObj["id"].asStr()
+                        val fnObj = tcObj["function"] as? JsonObject
+                        val name = fnObj?.get("name").asStr()
+                        val args = fnObj?.get("arguments").asStr().orEmpty()
+
+                        val acc = toolCalls.getOrPut(index) { MutableToolCall() }
+                        if (!id.isNullOrEmpty()) acc.id = id
+                        if (!name.isNullOrEmpty()) acc.name = name
+                        if (args.isNotEmpty()) acc.arguments.append(args)
+
+                        if (!id.isNullOrEmpty()) {
+                            emit(ProviderEvent.ToolCall(index, acc.id, acc.name, ""))
                         }
                     }
-                    emit(ProviderEvent.Done(finishReason))
-                    return@flow
+
+                    val finishReason = choice["finish_reason"].asStr()
+                    if (!finishReason.isNullOrEmpty()) {
+                        pendingFinishReason = finishReason
+                        if (!emittedTools && toolCalls.isNotEmpty()) {
+                            for ((index, tc) in toolCalls) {
+                                emittedTools = true
+                                emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                            }
+                        }
+                    }
                 }
-            }
-            if (!emittedTools && toolCalls.isNotEmpty()) {
-                for ((index, tc) in toolCalls) {
-                    emittedTools = true
-                    emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                if (!emittedTools && toolCalls.isNotEmpty()) {
+                    for ((index, tc) in toolCalls) {
+                        emittedTools = true
+                        emit(ProviderEvent.ToolCall(index, tc.id, tc.name, tc.arguments.toString()))
+                    }
                 }
+                emit(ProviderEvent.Done(pendingFinishReason))
             }
-            emit(ProviderEvent.Done(null))
+        } finally {
+            cancelHandle?.dispose()
+            call.cancel()
         }
     }
 

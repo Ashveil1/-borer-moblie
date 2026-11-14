@@ -46,10 +46,10 @@ class EngagementGate {
                 if (scheme != "http" && scheme != "https") {
                     return ScopeDecision(ok = false, reason = "protocol not allowed: $scheme:", aggression = defaultAggression)
                 }
-                parsed.host?.takeIf { it.isNotBlank() }
+                parsed.host?.removePrefix("[")?.removeSuffix("]")?.takeIf { it.isNotBlank() }
                     ?: return ScopeDecision(ok = false, reason = "malformed url host", aggression = defaultAggression)
             }
-            !host.isNullOrBlank() -> host.replace(Regex(":\\d+$"), "").removePrefix("[").removeSuffix("]")
+            !host.isNullOrBlank() -> parseHostWithoutPort(host)
             else -> return ScopeDecision(ok = false, reason = "no target given", aggression = defaultAggression)
         }
 
@@ -67,4 +67,19 @@ class EngagementGate {
 
     fun recordFailure(hostname: String) = Unit
     fun recordSuccess(hostname: String) = Unit
+
+    private fun parseHostWithoutPort(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("[")) {
+            val end = trimmed.indexOf(']')
+            if (end > 1) return trimmed.substring(1, end)
+        }
+        val firstColon = trimmed.indexOf(':')
+        val lastColon = trimmed.lastIndexOf(':')
+        return if (firstColon != -1 && firstColon == lastColon && trimmed.substring(lastColon + 1).all { it.isDigit() }) {
+            trimmed.substring(0, lastColon)
+        } else {
+            trimmed.removePrefix("[").removeSuffix("]")
+        }
+    }
 }

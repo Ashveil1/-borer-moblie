@@ -13,7 +13,8 @@ import com.example.data.BorerSettings
 import com.example.data.ShellBackend
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -137,7 +138,7 @@ object UbuntuProotRuntime {
     ): Result<ProcessBuilder> {
         return when (settings.shellBackend) {
             ShellBackend.ANDROID_SH -> {
-                val pb = ProcessBuilder("/system/bin/sh", "-c", command)
+                val pb = ProcessBuilder(resolveAndroidShell(), "-c", command)
                     .directory(cwd)
                     .redirectErrorStream(true)
                 env.forEach { (k, v) -> pb.environment()[k] = v }
@@ -190,10 +191,23 @@ object UbuntuProotRuntime {
         stdin: String?
     ): ShellExecResult = withContext(Dispatchers.IO) {
         val proc = pb.start()
-        val readerDeferred = async(Dispatchers.IO) {
-            runCatching { proc.inputStream.bufferedReader().readText() }.getOrDefault("")
+        val outputLock = Any()
+        val outputBuf = java.io.ByteArrayOutputStream()
+        val readerThread = Thread {
+            runCatching {
+                val buf = ByteArray(4096)
+                val stream = proc.inputStream
+                while (!Thread.currentThread().isInterrupted) {
+                    val n = stream.read(buf)
+                    if (n < 0) break
+                    if (n > 0) synchronized(outputLock) { outputBuf.write(buf, 0, n) }
+                }
+            }
+        }.apply {
+            isDaemon = true
+            start()
         }
-        val stdinJob = async(Dispatchers.IO) {
+        val stdinThread = Thread {
             runCatching {
                 if (stdin != null) {
                     proc.outputStream.bufferedWriter().use { it.write(stdin) }
@@ -201,18 +215,42 @@ object UbuntuProotRuntime {
                     proc.outputStream.close()
                 }
             }
+        }.apply {
+            isDaemon = true
+            start()
         }
-        val completed = withTimeoutOrNull(timeoutMs) {
-            stdinJob.await()
-            val exitCode = proc.waitFor()
-            val output = readerDeferred.await()
-            ShellExecResult(exitCode = exitCode, output = output, timedOut = false)
+        try {
+            val completed = withTimeoutOrNull(timeoutMs.coerceAtLeast(100L)) {
+                while (!proc.waitFor(25, TimeUnit.MILLISECONDS)) {
+                    ensureActive()
+                }
+                true
+            } == true
+            if (completed && isActive && !proc.isAlive) {
+                runCatching { stdinThread.join(500) }
+                runCatching { readerThread.join(1_000) }
+                val output = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+                ShellExecResult(exitCode = proc.exitValue(), output = output, timedOut = false)
+            } else {
+                proc.destroyForcibly()
+                runCatching { proc.waitFor(200, TimeUnit.MILLISECONDS) }
+                runCatching { proc.inputStream.close() }
+                runCatching { proc.outputStream.close() }
+                stdinThread.interrupt()
+                readerThread.interrupt()
+                runCatching { readerThread.join(200) }
+                val partial = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+                ShellExecResult(exitCode = null, output = partial, timedOut = true)
+            }
+        } finally {
+            if (proc.isAlive) {
+                runCatching { proc.destroyForcibly() }
+            }
+            runCatching { proc.inputStream.close() }
+            runCatching { proc.outputStream.close() }
+            stdinThread.interrupt()
+            readerThread.interrupt()
         }
-        if (completed != null) return@withContext completed
-        proc.destroyForcibly()
-        runCatching { proc.waitFor(500, TimeUnit.MILLISECONDS) }
-        val partial = withTimeoutOrNull(400) { readerDeferred.await() }.orEmpty()
-        ShellExecResult(exitCode = null, output = partial, timedOut = true)
     }
 
     private suspend fun execAndroidSh(
@@ -223,7 +261,7 @@ object UbuntuProotRuntime {
         stdin: String?
     ): ShellExecResult = withContext(Dispatchers.IO) {
         try {
-            val pb = ProcessBuilder("/system/bin/sh", "-c", command)
+            val pb = ProcessBuilder(resolveAndroidShell(), "-c", command)
                 .directory(cwd)
                 .redirectErrorStream(true)
             env.forEach { (k, v) -> pb.environment()[k] = v }
@@ -437,6 +475,9 @@ object UbuntuProotRuntime {
             true
         }.getOrDefault(false)
     }
+
+    private fun resolveAndroidShell(): String =
+        if (File("/system/bin/sh").exists()) "/system/bin/sh" else "/bin/sh"
 
     private fun sanitizeDistro(raw: String): String =
         raw.lowercase().replace(Regex("[^a-z0-9._-]"), "").ifBlank { "ubuntu" }

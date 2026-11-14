@@ -3,11 +3,10 @@ package com.example.tools
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.URLDecoder
@@ -185,15 +184,16 @@ object DiffEngine {
         val similarity = if (setA.size + setB.size == 0) 1.0
         else (2.0 * (setA.size - onlyA.size)) / (setA.size + setB.size)
 
+        val safeMaxLines = maxLines.coerceAtLeast(1)
         return buildList {
             add("similarity ${"%.1f".format(similarity * 100)}% · a ${aLines.size} lines · b ${bLines.size} lines")
             if (headerDiff.isNotBlank()) add(headerDiff)
             if (onlyA.isEmpty() && onlyB.isEmpty()) add("bodies are line-identical")
             add("--- only in a ---")
-            onlyA.take(maxLines).forEach { add("- ${it.take(400)}") }
+            onlyA.take(safeMaxLines).forEach { add("- ${it.take(400)}") }
             add("--- only in b ---")
-            onlyB.take(maxLines).forEach { add("+ ${it.take(400)}") }
-            if (onlyA.size + onlyB.size > maxLines) add("(truncated at $maxLines changed lines)")
+            onlyB.take(safeMaxLines).forEach { add("+ ${it.take(400)}") }
+            if (onlyA.size + onlyB.size > safeMaxLines) add("(truncated at $safeMaxLines changed lines)")
         }.joinToString("\n")
     }
 }
@@ -212,6 +212,8 @@ object MutateEngine {
         limit: Int = 40,
         seedValue: Int = 0x5eed
     ): Pair<Int, List<Variant>> {
+        val safeDepth = traversalDepth.coerceIn(1, 20)
+        val safeLimit = limit.coerceAtLeast(1)
         val rng = mulberry32(seedValue)
         val variants = linkedMapOf<String, String>()
 
@@ -238,8 +240,8 @@ object MutateEngine {
                     }
                     "terminator" -> listOf("'", "\"", "--", "#", ";", "-- -", "/*", "\u0000").forEach { add(input + it) }
                     "traversal" -> {
-                        for (i in 1..traversalDepth) add("../".repeat(i) + input)
-                        for (i in 1..traversalDepth) add("..%2f".repeat(i) + input)
+                        for (i in 1..safeDepth) add("../".repeat(i) + input)
+                        for (i in 1..safeDepth) add("..%2f".repeat(i) + input)
                     }
                     "truncate" -> {
                         add(input.take((input.length / 2).coerceAtLeast(1)))
@@ -266,7 +268,7 @@ object MutateEngine {
         }
 
         val rngNum = (rng() * 1_000_000).toInt()
-        val list = variants.entries.take(limit).mapIndexed { idx, (value, how) ->
+        val list = variants.entries.take(safeLimit).mapIndexed { idx, (value, how) ->
             Variant(idx + 1, how, value)
         }
         return rngNum to list
@@ -313,12 +315,12 @@ val transformTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val op = args["op"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val input = args["input"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val inputHex = args["input_hex"]?.jsonPrimitive?.contentOrNull
-        val algo = args["algorithm"]?.jsonPrimitive?.contentOrNull ?: "sha256"
-        val key = args["key"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val offset = args["offset"]?.jsonPrimitive?.intOrNull ?: 0
+        val op = (args["op"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val input = (args["input"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val inputHex = (args["input_hex"] as? JsonPrimitive)?.contentOrNull
+        val algo = (args["algorithm"] as? JsonPrimitive)?.contentOrNull ?: "sha256"
+        val key = (args["key"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val offset = (args["offset"] as? JsonPrimitive)?.intOrNull ?: 0
 
         return TransformEngine.run(op, input, inputHex, algo, key, offset).fold(
             onSuccess = { ToolResult(it) },
@@ -348,12 +350,12 @@ val diffTool = object : Tool {
             if (!isId) return value
             return ctx.artifacts.read(value) ?: error("unknown artifact $value")
         }
-        val a = runCatching { load(args["a"]?.jsonPrimitive?.contentOrNull.orEmpty(), args["a_id"]?.jsonPrimitive?.booleanOrNull == true) }
+        val a = runCatching { load((args["a"] as? JsonPrimitive)?.contentOrNull.orEmpty(), (args["a_id"] as? JsonPrimitive)?.booleanOrNull == true) }
             .getOrElse { return ToolResult("error: ${it.message}", isError = true) }
-        val b = runCatching { load(args["b"]?.jsonPrimitive?.contentOrNull.orEmpty(), args["b_id"]?.jsonPrimitive?.booleanOrNull == true) }
+        val b = runCatching { load((args["b"] as? JsonPrimitive)?.contentOrNull.orEmpty(), (args["b_id"] as? JsonPrimitive)?.booleanOrNull == true) }
             .getOrElse { return ToolResult("error: ${it.message}", isError = true) }
-        val ignoreWs = args["ignore_whitespace"]?.jsonPrimitive?.booleanOrNull == true
-        val maxLines = args["max_lines"]?.jsonPrimitive?.intOrNull ?: 200
+        val ignoreWs = (args["ignore_whitespace"] as? JsonPrimitive)?.booleanOrNull == true
+        val maxLines = (args["max_lines"] as? JsonPrimitive)?.intOrNull ?: 200
         return ToolResult(DiffEngine.compare(a, b, ignoreWs, maxLines))
     }
 }
@@ -375,12 +377,13 @@ val mutateTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val seed = args["seed"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val rules = (args["rules"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: listOf("case", "url", "null")
-        val contexts = (args["contexts"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
-        val depth = args["traversal_depth"]?.jsonPrimitive?.intOrNull ?: 3
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 40
-        val seedVal = args["seed_value"]?.jsonPrimitive?.intOrNull ?: 0x5eed
+        val seed = (args["seed"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val rules = (args["rules"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: listOf("case", "url", "null")
+        val contexts = (args["contexts"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+        val depth = (args["traversal_depth"] as? JsonPrimitive)?.intOrNull ?: 3
+        val limit = (args["limit"] as? JsonPrimitive)?.intOrNull ?: 40
+        val seedVal = (args["seed_value"] as? JsonPrimitive)?.intOrNull ?: 0x5eed
 
         val (rngNum, variants) = MutateEngine.generate(seed, rules, contexts, depth, limit, seedVal)
         val header = "seed: \"$seed\" · rules: ${rules.joinToString(",")} · contexts: ${contexts.joinToString(",").ifBlank { "-" }} · ${variants.size} variants (rng $rngNum)"

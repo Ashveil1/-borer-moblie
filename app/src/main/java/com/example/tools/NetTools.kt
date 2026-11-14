@@ -2,12 +2,12 @@ package com.example.tools
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -86,24 +86,26 @@ val httpTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        var url = args["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        var method = (args["method"]?.jsonPrimitive?.contentOrNull ?: "GET").uppercase()
-        val maxRedirects = args["redirects"]?.jsonPrimitive?.intOrNull ?: 0
-        val timeoutMs = (args["timeout_ms"]?.jsonPrimitive?.intOrNull ?: 30_000).toLong().coerceIn(500L, 120_000L)
-        val verifyTls = args["verify_tls"]?.jsonPrimitive?.booleanOrNull ?: true
-        val http2 = args["http2"]?.jsonPrimitive?.booleanOrNull ?: false
-        val decompress = args["decompress"]?.jsonPrimitive?.booleanOrNull ?: true
-        val maxBody = args["max_body"]?.jsonPrimitive?.intOrNull ?: MAX_HTTP_BODY
+        var url = args["url"].asStr().orEmpty()
+        if (url.isBlank()) return@withContext ToolResult("error: url is required", isError = true)
+        var method = (args["method"].asStr() ?: "GET").uppercase()
+        val maxRedirects = (args["redirects"].asInt() ?: 0).coerceIn(0, 20)
+        val timeoutMs = (args["timeout_ms"].asInt() ?: 30_000).toLong().coerceIn(500L, 120_000L)
+        val verifyTls = args["verify_tls"].asBool() ?: true
+        val http2 = args["http2"].asBool() ?: false
+        val decompress = args["decompress"].asBool() ?: true
+        val maxBody = (args["max_body"].asInt() ?: MAX_HTTP_BODY).coerceIn(1, 32 * 1024 * 1024)
 
         val headersMap = linkedMapOf<String, String>()
         (args["headers"] as? JsonObject)?.forEach { (k, v) ->
-            headersMap[k.lowercase()] = v.jsonPrimitive.contentOrNull.orEmpty()
+            headersMap[k.lowercase()] = v.asStr().orEmpty()
         }
 
-        val bodyB64 = args["body_base64"]?.jsonPrimitive?.contentOrNull
-        val bodyStr = args["body"]?.jsonPrimitive?.contentOrNull
+        val bodyB64 = args["body_base64"].asStr()
+        val bodyStr = args["body"].asStr()
         var bodyBytes: ByteArray? = when {
-            !bodyB64.isNullOrEmpty() -> runCatching { Base64.getDecoder().decode(bodyB64) }.getOrNull()
+            !bodyB64.isNullOrEmpty() -> runCatching { Base64.getDecoder().decode(bodyB64) }
+                .getOrElse { return@withContext ToolResult("error: invalid body_base64", isError = true) }
             bodyStr != null -> bodyStr.toByteArray(Charsets.UTF_8)
             else -> null
         }
@@ -161,13 +163,7 @@ val httpTool = object : Tool {
                     val rawBytes = out.toByteArray()
                     val encoding = res.header("content-encoding")?.lowercase().orEmpty()
                     val finalBytes = if (decompress && rawBytes.isNotEmpty()) {
-                        runCatching {
-                            when {
-                                encoding.contains("gzip") -> GZIPInputStream(ByteArrayInputStream(rawBytes)).readBytes()
-                                encoding.contains("deflate") -> InflaterInputStream(ByteArrayInputStream(rawBytes)).readBytes()
-                                else -> rawBytes
-                            }
-                        }.getOrDefault(rawBytes)
+                        decompressPartial(rawBytes, encoding, maxBody)
                     } else rawBytes
 
                     val respHeaders = linkedMapOf<String, String>()
@@ -254,10 +250,11 @@ val netTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        val rawHostPort = args["host"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val parts = rawHostPort.split(":")
-        val host = parts.firstOrNull().orEmpty().removePrefix("[").removeSuffix("]")
-        val port = args["port"]?.jsonPrimitive?.intOrNull ?: parts.getOrNull(1)?.toIntOrNull() ?: 443
+        val rawHostPort = args["host"].asStr().orEmpty()
+        val (host, parsedPort) = parseHostPort(rawHostPort)
+        val port = args["port"].asInt() ?: parsedPort ?: 443
+        if (host.isBlank()) return@withContext ToolResult("error: host is required", isError = true)
+        if (port !in 1..65535) return@withContext ToolResult("error: invalid port $port", isError = true)
 
         val decision = ctx.gate.check(host = host)
         if (!decision.ok) {
@@ -265,14 +262,14 @@ val netTool = object : Tool {
             return@withContext ToolResult("refused by scope gate: ${decision.reason}", isError = true)
         }
 
-        val readMs = (args["read_ms"]?.jsonPrimitive?.intOrNull ?: 3000).coerceIn(200, 120_000)
-        val maxBytes = args["max_bytes"]?.jsonPrimitive?.intOrNull ?: 262_144
-        val useTls = args["tls"]?.jsonPrimitive?.booleanOrNull ?: false
-        val verifyTls = args["verify_tls"]?.jsonPrimitive?.booleanOrNull ?: true
-        val until = args["until"]?.jsonPrimitive?.contentOrNull
+        val readMs = (args["read_ms"].asInt() ?: 3000).coerceIn(200, 120_000)
+        val maxBytes = (args["max_bytes"].asInt() ?: 262_144).coerceIn(1, 16 * 1024 * 1024)
+        val useTls = args["tls"].asBool() ?: false
+        val verifyTls = args["verify_tls"].asBool() ?: true
+        val until = args["until"].asStr()
 
-        val sendHex = args["send_hex"]?.jsonPrimitive?.contentOrNull
-        val sendText = args["send"]?.jsonPrimitive?.contentOrNull
+        val sendHex = args["send_hex"].asStr()
+        val sendText = args["send"].asStr()
         val payload = when {
             !sendHex.isNullOrBlank() -> sendHex.replace(Regex("[^0-9a-fA-F]"), "")
                 .chunked(2)
@@ -301,7 +298,7 @@ val netTool = object : Tool {
                         init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
                     }
                 }
-                (sslContext.socketFactory.createSocket(baseSocket, args["server_name"]?.jsonPrimitive?.contentOrNull ?: host, port, true) as SSLSocket).apply {
+                (sslContext.socketFactory.createSocket(baseSocket, args["server_name"].asStr() ?: host, port, true) as SSLSocket).apply {
                     startHandshake()
                 }
             } else {
@@ -354,5 +351,53 @@ val netTool = object : Tool {
         val (spilled, artId) = spill(ctx, bytes.toString(Charsets.UTF_8), "net", "$host:$port")
         val header = "$host:$port ${if (useTls) "TLS" else "TCP"} · $note · ${bytes.size}b · ${System.currentTimeMillis() - started}ms"
         ToolResult(content = "$header\n$spilled", artifactId = artId)
+    }
+}
+
+private fun JsonElement?.asStr(): String? = (this as? JsonPrimitive)?.contentOrNull
+private fun JsonElement?.asInt(): Int? = (this as? JsonPrimitive)?.intOrNull
+private fun JsonElement?.asBool(): Boolean? = (this as? JsonPrimitive)?.booleanOrNull
+
+private fun decompressPartial(rawBytes: ByteArray, encoding: String, maxBody: Int): ByteArray {
+    val stream = when {
+        encoding.contains("gzip") -> runCatching { GZIPInputStream(ByteArrayInputStream(rawBytes)) }.getOrNull()
+        encoding.contains("deflate") -> runCatching { InflaterInputStream(ByteArrayInputStream(rawBytes)) }.getOrNull()
+        else -> null
+    } ?: return rawBytes
+
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(8192)
+    try {
+        stream.use { s ->
+            while (out.size() < maxBody) {
+                val n = s.read(buf, 0, minOf(buf.size, maxBody - out.size()))
+                if (n <= 0) break
+                out.write(buf, 0, n)
+            }
+        }
+    } catch (_: Throwable) {
+        if (out.size() == 0) return rawBytes
+    }
+    return if (out.size() > 0) out.toByteArray() else rawBytes
+}
+
+private fun parseHostPort(rawHostPort: String): Pair<String, Int?> {
+    val trimmed = rawHostPort.trim()
+    if (trimmed.startsWith("[")) {
+        val close = trimmed.indexOf(']')
+        if (close > 1) {
+            val host = trimmed.substring(1, close)
+            val rest = trimmed.substring(close + 1)
+            val port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull() else null
+            return host to port
+        }
+    }
+    val firstColon = trimmed.indexOf(':')
+    val lastColon = trimmed.lastIndexOf(':')
+    return if (firstColon != -1 && firstColon == lastColon) {
+        val port = trimmed.substring(lastColon + 1).toIntOrNull()
+        if (port != null) trimmed.substring(0, lastColon) to port else trimmed to null
+    } else {
+        trimmed.removePrefix("[").removeSuffix("]") to null
     }
 }
