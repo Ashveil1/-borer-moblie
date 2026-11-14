@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -121,7 +122,7 @@ fun IntelScreen(
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = CircleShape,
                     elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
                     modifier = Modifier.testTag("intel_add_fab")
                 ) {

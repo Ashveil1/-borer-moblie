@@ -228,7 +228,7 @@ fun MarkdownProse(
 
     SelectionContainer(modifier = modifier) {
         Column(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             blocks.forEach { block ->
