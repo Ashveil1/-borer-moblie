@@ -161,7 +161,11 @@ fun ConsoleScreen(
                     modifier = Modifier
                         .widthIn(max = 620.dp)
                         .fillMaxSize()
-                        .padding(horizontal = 20.dp)
+                        .padding(horizontal = 20.dp),
+                    onPromptSuggestion = { inputText = it },
+                    onOpenSessions = onOpenSessions,
+                    onOpenIntel = onOpenIntel,
+                    onOpenLab = onOpenLab
                 )
             } else {
                 LazyColumn(
@@ -386,22 +390,79 @@ private fun MinimalChatTopBar(
 
 @Composable
 private fun ChatEmptyState(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPromptSuggestion: (String) -> Unit,
+    onOpenSessions: () -> Unit,
+    onOpenIntel: () -> Unit,
+    onOpenLab: () -> Unit
 ) {
-    Box(
-        contentAlignment = Alignment.Center,
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
         modifier = modifier
     ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                .testTag("empty_prompt_glyph")
+        ) {
+            Text(
+                text = ">",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+        Spacer(Modifier.height(20.dp))
         Text(
-            text = ">",
-            style = MaterialTheme.typography.displaySmall.copy(
-                fontFamily = JetBrainsMonoFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 36.sp
-            ),
+            text = "What are we hunting today?",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
             color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.testTag("empty_prompt_glyph")
+            textAlign = TextAlign.Center
         )
+        Spacer(Modifier.height(28.dp))
+        val suggestions: List<Pair<String, () -> Unit>> = listOf(
+            "Plan an authorized test for my app" to {
+                onPromptSuggestion("Help me plan an authorized security test for my app: ")
+            },
+            "Resume a previous session" to onOpenSessions,
+            "Open the Security Lab" to onOpenLab,
+            "Review findings & reports" to onOpenIntel
+        )
+        suggestions.forEach { (label, action) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(vertical = 4.dp)
+                    .widthIn(max = 420.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
+                    .clickable(onClick = action)
+                    .padding(horizontal = 16.dp, vertical = 13.dp)
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
     }
 }
 
@@ -914,6 +975,13 @@ private fun FloatingPillComposer(
                     .heightIn(min = 48.dp)
                     .padding(horizontal = 6.dp, vertical = 10.dp)
             ) {
+                if (inputText.isEmpty()) {
+                    Text(
+                        text = "Message Borer",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 BasicTextField(
                     value = inputText,
                     onValueChange = onInputChange,
