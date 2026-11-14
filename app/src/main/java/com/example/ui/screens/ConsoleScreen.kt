@@ -467,7 +467,7 @@ private fun ChatEmptyState(
 }
 
 @Composable
-private fun UserBubble(entry: TranscriptEntry.User) {
+internal fun UserBubble(entry: TranscriptEntry.User) {
     val bubbleShape = RoundedCornerShape(
         topStart = 20.dp,
         topEnd = 20.dp,
@@ -498,7 +498,7 @@ private fun UserBubble(entry: TranscriptEntry.User) {
 }
 
 @Composable
-private fun AssistantProse(
+internal fun AssistantProse(
     entry: TranscriptEntry.Assistant,
     isStreaming: Boolean
 ) {
@@ -535,7 +535,7 @@ private fun AssistantProse(
 }
 
 @Composable
-private fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) {
+internal fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -590,7 +590,7 @@ private fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
+internal fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
     var expanded by remember { mutableStateOf(false) }
     val argSummary = remember(entry.name, entry.arguments) {
         ToolSummaryFormatter.summarize(entry.name, entry.arguments)
@@ -736,7 +736,7 @@ private fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
 }
 
 @Composable
-private fun SubtleInfoLine(entry: TranscriptEntry.Info) {
+internal fun SubtleInfoLine(entry: TranscriptEntry.Info) {
     Row(
         horizontalArrangement = Arrangement.Center,
         modifier = Modifier
