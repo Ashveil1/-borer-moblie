@@ -98,8 +98,8 @@ fun SessionsScreen(
                 sessions = activeSessions,
                 activeRunId = activeRunId,
                 isArchived = false,
-                onResume = { vm.resumeSession(it); onResumedOrStarted() },
-                onFork = { vm.forkSession(it); onResumedOrStarted() },
+                onResume = { if (vm.resumeSession(it)) onResumedOrStarted() },
+                onFork = { if (vm.forkSession(it)) onResumedOrStarted() },
                 onToggleArchive = { vm.archiveSession(it.id, true) },
                 onDelete = { vm.deleteSession(it.id) }
             )
@@ -107,8 +107,8 @@ fun SessionsScreen(
                 sessions = archivedSessions,
                 activeRunId = activeRunId,
                 isArchived = true,
-                onResume = { vm.resumeSession(it); onResumedOrStarted() },
-                onFork = { vm.forkSession(it); onResumedOrStarted() },
+                onResume = { if (vm.resumeSession(it)) onResumedOrStarted() },
+                onFork = { if (vm.forkSession(it)) onResumedOrStarted() },
                 onToggleArchive = { vm.archiveSession(it.id, false) },
                 onDelete = { vm.deleteSession(it.id) }
             )

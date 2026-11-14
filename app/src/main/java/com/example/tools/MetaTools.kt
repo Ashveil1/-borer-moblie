@@ -3,9 +3,9 @@ package com.example.tools
 import com.example.data.NoteKind
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 val notesTool = object : Tool {
@@ -28,36 +28,37 @@ val notesTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        return when (args["action"]?.jsonPrimitive?.contentOrNull ?: "query") {
+        return when ((args["action"] as? JsonPrimitive)?.contentOrNull ?: "query") {
             "put" -> {
-                val kind = NoteKind.fromWire(args["kind"]?.jsonPrimitive?.contentOrNull)
-                val key = args["key"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val body = args["body"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val tags = (args["tags"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
-                val links = (args["links"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.longOrNull }.orEmpty()
+                val kind = NoteKind.fromWire((args["kind"] as? JsonPrimitive)?.contentOrNull)
+                val key = (args["key"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                if (key.isEmpty()) return ToolResult("error: key is required for put", isError = true)
+                val body = (args["body"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                val tags = (args["tags"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+                val links = (args["links"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.longOrNull }.orEmpty()
                 val note = ctx.store.putNote(kind, key, body, tags, links)
                 ctx.log.append("note.put", mapOf("id" to note.id, "kind" to note.kind.wire, "key" to note.key))
                 ctx.log.append("note.update", mapOf("id" to note.id, "bytes" to note.body.length))
                 ToolResult("note #${note.id} saved (${note.kind.wire}: ${note.key}, ${note.body.length} bytes)")
             }
             "get" -> {
-                val id = args["id"]?.jsonPrimitive?.longOrNull ?: -1L
+                val id = (args["id"] as? JsonPrimitive)?.longOrNull ?: -1L
                 val note = ctx.store.getNote(id) ?: return ToolResult("error: no note #$id", isError = true)
                 ToolResult(
                     "#${note.id} [${note.kind.wire}] ${note.key}\nupdated ${note.updated}\ntags ${note.tags.joinToString(",").ifBlank { "-" }} links ${note.links.joinToString(",").ifBlank { "-" }}\n\n${note.body}"
                 )
             }
             "delete" -> {
-                val id = args["id"]?.jsonPrimitive?.longOrNull ?: -1L
+                val id = (args["id"] as? JsonPrimitive)?.longOrNull ?: -1L
                 val ok = ctx.store.deleteNote(id)
                 ToolResult(if (ok) "deleted note #$id" else "error: no note #$id", isError = !ok)
             }
             "digest" -> ToolResult(ctx.store.digest())
             else -> {
-                val kindStr = args["kind"]?.jsonPrimitive?.contentOrNull
+                val kindStr = (args["kind"] as? JsonPrimitive)?.contentOrNull
                 val kind = kindStr?.let { NoteKind.fromWire(it) }
-                val text = args["text"]?.jsonPrimitive?.contentOrNull
-                val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50
+                val text = (args["text"] as? JsonPrimitive)?.contentOrNull
+                val limit = ((args["limit"] as? JsonPrimitive)?.intOrNull ?: 50).coerceIn(1, 500)
                 val notes = ctx.store.queryNotes(kind = kind, text = text, limit = limit)
                 if (notes.isEmpty()) return ToolResult("no notes matched")
                 val rendered = notes.joinToString("\n\n") { n ->
@@ -88,9 +89,9 @@ val recallTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: "list"
+        val action = (args["action"] as? JsonPrimitive)?.contentOrNull ?: "list"
         if (action == "list") {
-            val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50
+            val limit = ((args["limit"] as? JsonPrimitive)?.intOrNull ?: 50).coerceAtLeast(1)
             val refs = ctx.artifacts.list().takeLast(limit)
             if (refs.isEmpty()) return ToolResult("no artifacts yet")
             return ToolResult(
@@ -99,15 +100,15 @@ val recallTool = object : Tool {
                 }
             )
         }
-        val id = args["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val id = (args["id"] as? JsonPrimitive)?.contentOrNull.orEmpty()
         if (id.isEmpty()) return ToolResult("error: id is required", isError = true)
         ctx.artifacts.get(id) ?: return ToolResult("error: unknown artifact $id", isError = true)
 
         return when (action) {
             "grep" -> {
-                val pattern = args["pattern"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val context = args["context"]?.jsonPrimitive?.intOrNull ?: 0
-                val max = args["limit"]?.jsonPrimitive?.intOrNull ?: 200
+                val pattern = (args["pattern"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                val context = ((args["context"] as? JsonPrimitive)?.intOrNull ?: 0).coerceAtLeast(0)
+                val max = ((args["limit"] as? JsonPrimitive)?.intOrNull ?: 200).coerceAtLeast(1)
                 val hits = runCatching { ctx.artifacts.grep(id, pattern, context = context, max = max) }
                     .getOrElse { return ToolResult("error: ${it.message}", isError = true) }
                     ?: return ToolResult("error: cannot read $id", isError = true)
@@ -116,8 +117,8 @@ val recallTool = object : Tool {
                 ToolResult(spilled, artifactId = artId)
             }
             "slice" -> {
-                val offset = args["offset"]?.jsonPrimitive?.intOrNull ?: 0
-                val length = args["length"]?.jsonPrimitive?.intOrNull ?: 2000
+                val offset = ((args["offset"] as? JsonPrimitive)?.intOrNull ?: 0).coerceAtLeast(0)
+                val length = ((args["length"] as? JsonPrimitive)?.intOrNull ?: 2000).coerceAtLeast(1)
                 val text = ctx.artifacts.slice(id, offset, length)
                 if (text == null) ToolResult("error: cannot read $id", isError = true) else ToolResult(text)
             }
@@ -128,7 +129,7 @@ val recallTool = object : Tool {
                     return ToolResult(spilled, artifactId = artId)
                 }
                 val lines = text.split('\n')
-                val n = args["length"]?.jsonPrimitive?.intOrNull ?: 200
+                val n = ((args["length"] as? JsonPrimitive)?.intOrNull ?: 200).coerceAtLeast(1)
                 val view = if (action == "tail") lines.takeLast(n) else lines.take(n)
                 val (spilled, artId) = spill(ctx, view.joinToString("\n"), "recall", id)
                 ToolResult(spilled, artifactId = artId)
@@ -150,7 +151,7 @@ val todoTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: "list"
+        val action = (args["action"] as? JsonPrimitive)?.contentOrNull ?: "list"
         val note = ctx.store.queryNotes(kind = NoteKind.TODO, limit = 1).firstOrNull()
         val items = mutableListOf<Pair<Boolean, String>>()
         val regex = Regex("^\\d+\\.\\s*\\[( |x)]\\s*(.*)$")
@@ -161,13 +162,19 @@ val todoTool = object : Tool {
         }
 
         when (action) {
-            "add" -> items.add(false to args["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
+            "add" -> {
+                val text = (args["text"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                if (text.isEmpty()) return ToolResult("error: text is required for add", isError = true)
+                items.add(false to text)
+            }
             "toggle" -> {
-                val idx = (args["id"]?.jsonPrimitive?.intOrNull ?: 0) - 1
-                if (idx in items.indices) {
-                    val cur = items[idx]
-                    items[idx] = (!cur.first) to cur.second
+                val rawId = (args["id"] as? JsonPrimitive)?.intOrNull ?: 0
+                val idx = rawId - 1
+                if (idx !in items.indices) {
+                    return ToolResult("error: todo #$rawId out of range (1..${items.size})", isError = true)
                 }
+                val cur = items[idx]
+                items[idx] = (!cur.first) to cur.second
             }
             "clear" -> items.clear()
         }
@@ -217,8 +224,8 @@ val finishTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val summary = args["summary"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val outcome = args["outcome"]?.jsonPrimitive?.contentOrNull ?: "exhausted"
+        val summary = (args["summary"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val outcome = (args["outcome"] as? JsonPrimitive)?.contentOrNull ?: "exhausted"
         ctx.log.append("run.end", mapOf("outcome" to outcome, "summary" to summary))
         ctx.finish?.invoke(summary, outcome)
         return ToolResult("run finished ($outcome)")

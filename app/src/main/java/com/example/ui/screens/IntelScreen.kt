@@ -49,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +73,8 @@ import com.example.data.NoteKind
 import com.example.tools.Cvss31Calculator
 import com.example.ui.BorerViewModel
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @Composable
@@ -89,8 +92,22 @@ fun IntelScreen(
 
     var showNewFindingDialog by remember { mutableStateOf(false) }
     var showNewNoteDialog by remember { mutableStateOf(false) }
+    var selectedFinding by remember { mutableStateOf<FindingEntity?>(null) }
     var selectedFindingReport by remember { mutableStateOf<Pair<FindingEntity, String>?>(null) }
     var selectedArtifact by remember { mutableStateOf<ArtifactEntity?>(null) }
+
+    LaunchedEffect(selectedFinding) {
+        val f = selectedFinding
+        if (f == null) {
+            selectedFindingReport = null
+        } else {
+            val text = withContext(Dispatchers.IO) {
+                f.reportPath?.let { p -> runCatching { File(p).readText() }.getOrNull() }
+                    ?: "# ${f.title}\n\nSeverity: ${f.severity}\nAsset: ${f.asset}\nCVSS: ${f.cvss ?: "n/a"}"
+            }
+            selectedFindingReport = f to text
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -143,11 +160,7 @@ fun IntelScreen(
             when (tabIdx) {
                 0 -> FindingsPane(
                     findings = findings,
-                    onOpenReport = { f ->
-                        val text = f.reportPath?.let { p -> runCatching { File(p).readText() }.getOrNull() }
-                            ?: "# ${f.title}\n\nSeverity: ${f.severity}\nAsset: ${f.asset}\nCVSS: ${f.cvss ?: "n/a"}"
-                        selectedFindingReport = f to text
-                    },
+                    onOpenReport = { f -> selectedFinding = f },
                     onAddFinding = { showNewFindingDialog = true }
                 )
                 1 -> NotesAndTodoPane(
@@ -193,7 +206,7 @@ fun IntelScreen(
 
     selectedFindingReport?.let { (finding, markdown) ->
         AlertDialog(
-            onDismissRequest = { selectedFindingReport = null },
+            onDismissRequest = { selectedFinding = null },
             containerColor = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(20.dp),
             modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
@@ -219,7 +232,7 @@ fun IntelScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { selectedFindingReport = null }) { Text("Close") }
+                TextButton(onClick = { selectedFinding = null }) { Text("Close") }
             }
         )
     }
@@ -724,7 +737,11 @@ private fun NewFindingDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 CleanStatusBadge(
-                    text = preview?.let { "CVSS ${"%.1f".format(it.base)} (${it.severity.uppercase()})" } ?: "Invalid CVSS 3.1 vector",
+                    text = when {
+                        preview != null -> "CVSS ${"%.1f".format(preview.base)} (${preview.severity.uppercase()})"
+                        vector.isBlank() -> "Optional CVSS 3.1 vector"
+                        else -> "Invalid CVSS 3.1 vector"
+                    },
                     inverted = preview != null
                 )
                 CleanOutlinedTextField(value = summary, onValueChange = { summary = it }, label = "Summary", minLines = 2, modifier = Modifier.fillMaxWidth())
@@ -735,7 +752,7 @@ private fun NewFindingDialog(
         confirmButton = {
             CleanPrimaryButton(
                 onClick = { onSave(title, asset, vector, summary, impact, remediation) },
-                enabled = title.isNotBlank()
+                enabled = title.isNotBlank() && (vector.isBlank() || preview != null)
             ) { Text("Save Report") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
@@ -791,9 +808,13 @@ private fun ArtifactRecallDialog(
     onDismiss: () -> Unit
 ) {
     var pattern by remember { mutableStateOf("") }
-    val content = remember(artifact.id, pattern) {
-        if (pattern.isBlank()) readContent().take(12_000)
-        else grepContent(pattern).joinToString("\n\n").ifBlank { "No matches for /$pattern/" }
+    var content by remember(artifact.id) { mutableStateOf("Loading...") }
+
+    LaunchedEffect(artifact.id, pattern) {
+        content = withContext(Dispatchers.IO) {
+            if (pattern.isBlank()) readContent().take(12_000)
+            else grepContent(pattern).joinToString("\n\n").ifBlank { "No matches for /$pattern/" }
+        }
     }
 
     AlertDialog(

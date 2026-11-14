@@ -72,6 +72,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -222,30 +223,35 @@ class BorerSessionController(
         val cfg = _config.value
         if (cfg.providers.isEmpty()) return
         scope.launch(Dispatchers.IO) {
-            val updated = cfg.providers.map { p ->
-                if (p.contextSource == ContextSource.CUSTOM) return@map p
+            val detected = cfg.providers.associate { p ->
+                if (p.contextSource == ContextSource.CUSTOM) return@associate (p.baseUrl to p.model) to null
                 val entries = runCatching { OpenAICompatClient(p).catalog() }.getOrNull()
                 val match = entries?.firstOrNull { e ->
                     e.id == p.model || e.id.endsWith("/${p.model}") || p.model.endsWith(e.id)
                 }
-                if (match?.context != null) {
-                    p.copy(contextWindow = match.context, contextSource = ContextSource.DETECTED)
-                } else p
+                (p.baseUrl to p.model) to match?.context
             }
-            _config.value = _config.value.copy(providers = updated)
-            updated.firstOrNull()?.let { first ->
-                _console.value = _console.value.copy(
-                    contextWindow = updated.minOf { it.contextWindow },
-                    contextSource = first.contextSource.name.lowercase(),
-                    activeModel = first.model
-                )
+            var changed = false
+            _config.update { current ->
+                val merged = current.providers.map { p ->
+                    val ctx = if (p.contextSource != ContextSource.CUSTOM) detected[p.baseUrl to p.model] else null
+                    if (ctx != null && ctx != p.contextWindow) {
+                        changed = true
+                        p.copy(contextWindow = ctx, contextSource = ContextSource.DETECTED)
+                    } else p
+                }
+                current.copy(providers = merged)
             }
-            syncBackgroundKeepAlive()
+            if (changed) {
+                withContext(Dispatchers.Main) {
+                    applyConfigToIdleSession()
+                }
+            }
         }
     }
 
     fun setRunMode(mode: RunMode) {
-        _console.value = _console.value.copy(mode = mode)
+        _console.update { it.copy(mode = mode) }
         syncBackgroundKeepAlive()
     }
 
@@ -390,13 +396,15 @@ class BorerSessionController(
             }
 
             withContext(Dispatchers.Main) {
-                _console.value = _console.value.copy(
-                    contextWindow = fallbackClient.contextWindow,
-                    contextSource = currentProfile?.contextSource?.name?.lowercase() ?: "fallback",
-                    activeModel = currentProfile?.model ?: "unconfigured",
-                    providerConfigured = currentCfg.providers.isNotEmpty(),
-                    learningStats = stats
-                )
+                _console.update {
+                    it.copy(
+                        contextWindow = fallbackClient.contextWindow,
+                        contextSource = currentProfile?.contextSource?.name?.lowercase() ?: "fallback",
+                        activeModel = currentProfile?.model ?: "unconfigured",
+                        providerConfigured = currentCfg.providers.isNotEmpty(),
+                        learningStats = stats
+                    )
+                }
                 observeLogStreams()
                 syncBackgroundKeepAlive()
             }
@@ -408,9 +416,9 @@ class BorerSessionController(
         observersJob = scope.launch {
             launch { log.events.collect { _events.value = it } }
             launch { log.httpLogs.collect { _httpLogs.value = it } }
-            launch { gate.hostsSnapshot.collect { _console.value = _console.value.copy(hostsReached = it) } }
-            launch { log.allowedCount.collect { _console.value = _console.value.copy(requestsAllowed = it) } }
-            launch { log.deniedCount.collect { _console.value = _console.value.copy(requestsDenied = it) } }
+            launch { gate.hostsSnapshot.collect { hosts -> _console.update { it.copy(hostsReached = hosts) } } }
+            launch { log.allowedCount.collect { allowed -> _console.update { it.copy(requestsAllowed = allowed) } } }
+            launch { log.deniedCount.collect { denied -> _console.update { it.copy(requestsDenied = denied) } } }
         }
     }
 
@@ -447,7 +455,7 @@ class BorerSessionController(
 
         if (_console.value.busy) {
             appendEntry(TranscriptEntry.User(UUID.randomUUID().toString(), text))
-            _console.value = _console.value.copy(queuedPrompts = _console.value.queuedPrompts + text)
+            _console.update { it.copy(queuedPrompts = it.queuedPrompts + text) }
             return
         }
 
@@ -466,10 +474,11 @@ class BorerSessionController(
 
         stopFlag = false
         if (echoUser) appendEntry(TranscriptEntry.User(UUID.randomUUID().toString(), text))
-        _console.value = _console.value.copy(busy = true, stopRequested = false)
+        _console.update { it.copy(busy = true, stopRequested = false) }
         syncBackgroundKeepAlive()
 
         activeRunJob = scope.launch {
+            val myJob = coroutineContext[Job]
             var runOutcome: String? = null
             var runSummary: String? = null
             var runTurns = 0
@@ -509,17 +518,26 @@ class BorerSessionController(
                         persistSessionRecord(runOutcome, runSummary, runTurns)
                     }
                 }
-                val next = _console.value.queuedPrompts.firstOrNull()
-                if (next != null) {
-                    _console.value = _console.value.copy(
-                        busy = false,
-                        stopRequested = false,
-                        queuedPrompts = _console.value.queuedPrompts.drop(1)
-                    )
-                    executePrompt(next, echoUser = false)
-                } else {
-                    _console.value = _console.value.copy(busy = false, stopRequested = false)
+                if (activeRunJob !== myJob) return@launch
+                activeRunJob = null
+                if (stopFlag || runOutcome == "cancelled") {
+                    _console.update { it.copy(busy = false, stopRequested = false, queuedPrompts = emptyList()) }
                     syncBackgroundKeepAlive()
+                } else {
+                    var next: String? = null
+                    _console.update { cur ->
+                        next = cur.queuedPrompts.firstOrNull()
+                        cur.copy(
+                            busy = false,
+                            stopRequested = false,
+                            queuedPrompts = if (next != null) cur.queuedPrompts.drop(1) else emptyList()
+                        )
+                    }
+                    if (next != null) {
+                        executePrompt(next!!, echoUser = false)
+                    } else {
+                        syncBackgroundKeepAlive()
+                    }
                 }
             }
         }
@@ -527,27 +545,34 @@ class BorerSessionController(
 
     fun requestStop() {
         stopFlag = true
-        _console.value = _console.value.copy(stopRequested = true)
+        _console.update { it.copy(stopRequested = true) }
         syncBackgroundKeepAlive()
     }
 
     fun forceCancelTurn() {
         stopFlag = true
-        activeRunJob?.cancel()
-        _console.value = _console.value.copy(busy = false, stopRequested = false, queuedPrompts = emptyList())
+        val job = activeRunJob
+        activeRunJob = null
+        job?.cancel()
+        _console.update { it.copy(busy = false, stopRequested = false, queuedPrompts = emptyList()) }
         syncBackgroundKeepAlive()
     }
 
     fun toggleReasoningCollapsed(entryId: String) {
-        _console.value = _console.value.copy(
-            entries = _console.value.entries.map {
-                if (it is TranscriptEntry.Reasoning && it.id == entryId) it.copy(collapsed = !it.collapsed) else it
-            }
-        )
+        _console.update { cur ->
+            cur.copy(
+                entries = cur.entries.map {
+                    if (it is TranscriptEntry.Reasoning && it.id == entryId) it.copy(collapsed = !it.collapsed) else it
+                }
+            )
+        }
     }
 
-    fun resumeSession(sessionEntity: SessionEntity) {
-        if (_console.value.busy) return
+    fun resumeSession(sessionEntity: SessionEntity): Boolean {
+        if (_console.value.busy) {
+            appendInfo("cannot switch session while a turn is running", isWarn = true)
+            return false
+        }
         scope.launch {
             val msgs = withContext(Dispatchers.IO) {
                 SessionFiles.loadMessages(File(runsDir, sessionEntity.id))
@@ -556,10 +581,14 @@ class BorerSessionController(
             sessionInitJob?.join()
             appendInfo("resumed ${sessionEntity.id} · ${sessionEntity.turns} turns")
         }
+        return true
     }
 
-    fun forkSession(sessionEntity: SessionEntity) {
-        if (_console.value.busy) return
+    fun forkSession(sessionEntity: SessionEntity): Boolean {
+        if (_console.value.busy) {
+            appendInfo("cannot fork session while a turn is running", isWarn = true)
+            return false
+        }
         scope.launch {
             val newId = "${sessionEntity.id}-fork-${EventLog.newRunId().takeLast(6)}"
             val msgs = withContext(Dispatchers.IO) {
@@ -577,6 +606,7 @@ class BorerSessionController(
             sessionInitJob?.join()
             appendInfo("forked ${sessionEntity.id} -> $newId")
         }
+        return true
     }
 
     fun archiveSession(id: String, archived: Boolean) {
@@ -637,7 +667,7 @@ class BorerSessionController(
                         startNewSession(runId = runId, taskHint = target)
                         sessionInitJob?.join()
                         appendEntry(TranscriptEntry.User(UUID.randomUUID().toString(), prompt))
-                        _console.value = _console.value.copy(busy = true, stopRequested = false)
+                        _console.update { it.copy(busy = true, stopRequested = false) }
                         syncBackgroundKeepAlive()
 
                         val res = agentSession?.run(prompt, maxTurns = 200)
@@ -666,12 +696,12 @@ class BorerSessionController(
                                 persistSessionRecord(runOutcome, runSummary, runTurns)
                             }
                         }
-                        _console.value = _console.value.copy(busy = false, stopRequested = false)
+                        _console.update { it.copy(busy = false, stopRequested = false) }
                     }
                 }
             } finally {
                 _huntRunning.value = false
-                _console.value = _console.value.copy(busy = false, stopRequested = false)
+                _console.update { it.copy(busy = false, stopRequested = false) }
                 syncBackgroundKeepAlive()
             }
         }
@@ -681,7 +711,7 @@ class BorerSessionController(
         _huntRunning.value = false
         stopFlag = true
         huntJob?.cancel()
-        _console.value = _console.value.copy(busy = false, stopRequested = false)
+        _console.update { it.copy(busy = false, stopRequested = false) }
         syncBackgroundKeepAlive()
     }
 
@@ -988,12 +1018,14 @@ class BorerSessionController(
         val cfg = _config.value
         val first = cfg.providers.firstOrNull()
         val window = cfg.providers.minOfOrNull { it.contextWindow } ?: 32_768
-        _console.value = _console.value.copy(
-            providerConfigured = cfg.providers.isNotEmpty(),
-            activeModel = first?.model ?: "unconfigured",
-            contextWindow = window,
-            contextSource = first?.contextSource?.name?.lowercase() ?: "fallback"
-        )
+        _console.update {
+            it.copy(
+                providerConfigured = cfg.providers.isNotEmpty(),
+                activeModel = first?.model ?: "unconfigured",
+                contextWindow = window,
+                contextSource = first?.contextSource?.name?.lowercase() ?: "fallback"
+            )
+        }
         syncBackgroundKeepAlive()
         if (!_console.value.busy) {
             scope.launch(Dispatchers.IO) {
@@ -1011,6 +1043,7 @@ class BorerSessionController(
                     buildMemoryBrief(currentMsgs.firstOrNull { it.role == "user" }?.content).takeIf { it.isNotBlank() }
                 ).joinToString("\n\n").ifBlank { null }
 
+                val snap = _console.value
                 agentSession = AgentSession(
                     SessionDeps(
                         profile = currentFirst,
@@ -1023,7 +1056,9 @@ class BorerSessionController(
                         extraInstructions = extra,
                         ui = makeUiHooks(),
                         shouldStop = { stopFlag },
-                        initialMessages = currentMsgs
+                        initialMessages = currentMsgs,
+                        initialTotals = snap.totals,
+                        initialContextTokens = snap.contextTokens
                     )
                 )
             }
@@ -1144,40 +1179,44 @@ class BorerSessionController(
 
     private fun makeUiHooks(): UiHooks = object : UiHooks {
         override fun onTurn(turn: Int) {
-            _console.value = _console.value.copy(turn = turn)
+            _console.update { it.copy(turn = turn) }
             syncBackgroundKeepAlive()
         }
 
         override fun onText(delta: String) {
             if (delta.isEmpty()) return
-            val list = _console.value.entries.toMutableList()
-            for (i in list.lastIndex downTo 0) {
-                val item = list[i]
-                if (item is TranscriptEntry.Reasoning && !item.collapsed) {
-                    list[i] = item.copy(collapsed = true)
-                } else if (item is TranscriptEntry.User || item is TranscriptEntry.Reasoning) {
-                    break
+            _console.update { cur ->
+                val list = cur.entries.toMutableList()
+                for (i in list.lastIndex downTo 0) {
+                    val item = list[i]
+                    if (item is TranscriptEntry.Reasoning && !item.collapsed) {
+                        list[i] = item.copy(collapsed = true)
+                    } else if (item is TranscriptEntry.User || item is TranscriptEntry.Reasoning) {
+                        break
+                    }
                 }
+                val last = list.lastOrNull()
+                if (last is TranscriptEntry.Assistant) {
+                    list[list.lastIndex] = last.copy(text = last.text + delta)
+                } else {
+                    list.add(TranscriptEntry.Assistant(UUID.randomUUID().toString(), delta))
+                }
+                cur.copy(entries = list)
             }
-            val last = list.lastOrNull()
-            if (last is TranscriptEntry.Assistant) {
-                list[list.lastIndex] = last.copy(text = last.text + delta)
-            } else {
-                list.add(TranscriptEntry.Assistant(UUID.randomUUID().toString(), delta))
-            }
-            _console.value = _console.value.copy(entries = list)
         }
 
         override fun onReasoning(delta: String) {
             if (delta.isEmpty()) return
-            val list = _console.value.entries.toMutableList()
-            val last = list.lastOrNull()
-            if (last is TranscriptEntry.Reasoning && !last.collapsed) {
-                list[list.lastIndex] = last.copy(text = last.text + delta)
-            } else {
-                list.add(TranscriptEntry.Reasoning(UUID.randomUUID().toString(), delta))
+            _console.update { cur ->
+                val list = cur.entries.toMutableList()
+                val last = list.lastOrNull()
+                if (last is TranscriptEntry.Reasoning && !last.collapsed) {
+                    list[list.lastIndex] = last.copy(text = last.text + delta)
+                } else {
+                    list.add(TranscriptEntry.Reasoning(UUID.randomUUID().toString(), delta))
+                }
+                cur.copy(entries = list)
             }
-            _console.value = _console.value.copy(entries = list)
         }
 
         override fun onToolStart(call: ToolCallRequest) {
@@ -1194,31 +1233,33 @@ class BorerSessionController(
         }
 
         override fun onToolEnd(call: ToolCallRequest, ok: Boolean, ms: Long, preview: String) {
-            val list = _console.value.entries.toMutableList()
-            val idx = list.indexOfLast { it is TranscriptEntry.ToolExec && it.callId == call.id }
-            if (idx >= 0) {
-                val cur = list[idx] as TranscriptEntry.ToolExec
-                list[idx] = cur.copy(running = false, ok = ok, ms = ms, preview = preview)
-                _console.value = _console.value.copy(entries = list)
-            } else {
-                appendEntry(
-                    TranscriptEntry.ToolExec(
-                        id = UUID.randomUUID().toString(),
-                        callId = call.id,
-                        name = call.name,
-                        arguments = call.arguments,
-                        running = false,
-                        ok = ok,
-                        ms = ms,
-                        preview = preview
+            _console.update { cur ->
+                val list = cur.entries.toMutableList()
+                val idx = list.indexOfLast { it is TranscriptEntry.ToolExec && it.callId == call.id }
+                if (idx >= 0) {
+                    val existing = list[idx] as TranscriptEntry.ToolExec
+                    list[idx] = existing.copy(running = false, ok = ok, ms = ms, preview = preview)
+                } else {
+                    list.add(
+                        TranscriptEntry.ToolExec(
+                            id = UUID.randomUUID().toString(),
+                            callId = call.id,
+                            name = call.name,
+                            arguments = call.arguments,
+                            running = false,
+                            ok = ok,
+                            ms = ms,
+                            preview = preview
+                        )
                     )
-                )
+                }
+                cur.copy(entries = list)
             }
             syncBackgroundKeepAlive()
         }
 
         override fun onUsage(usage: Usage, totals: Usage, contextTokens: Int) {
-            _console.value = _console.value.copy(contextTokens = contextTokens, totals = totals)
+            _console.update { it.copy(contextTokens = contextTokens, totals = totals) }
         }
 
         override fun onInfo(text: String) {
@@ -1227,7 +1268,7 @@ class BorerSessionController(
     }
 
     private fun appendEntry(entry: TranscriptEntry) {
-        _console.value = _console.value.copy(entries = _console.value.entries + entry)
+        _console.update { it.copy(entries = it.entries + entry) }
     }
 
     private fun appendInfo(text: String, isWarn: Boolean = false) {

@@ -5,9 +5,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.security.MessageDigest
 import java.time.LocalDate
@@ -22,7 +22,8 @@ data class CvssScore(
 )
 
 object Cvss31Calculator {
-    fun score(vector: String): CvssScore? {
+    fun score(vectorRaw: String): CvssScore? {
+        val vector = vectorRaw.trim()
         if (!vector.startsWith("CVSS:3.1/")) return null
         val m = vector.removePrefix("CVSS:3.1/")
             .split('/')
@@ -88,13 +89,18 @@ val verifyTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        val command = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val runs = (args["runs"]?.jsonPrimitive?.intOrNull ?: ctx.settings.evidenceRecords).coerceIn(1, 10)
-        val mustPass = (args["must_pass"]?.jsonPrimitive?.intOrNull ?: ((runs + 1) / 2).coerceAtLeast(1)).coerceIn(1, runs)
-        val timeoutMs = (args["timeout_ms"]?.jsonPrimitive?.intOrNull ?: 60_000).coerceIn(500, 600_000).toLong()
-        val expectPattern = args["expect"]?.jsonPrimitive?.contentOrNull
-        val expectRegex = expectPattern?.let { runCatching { Regex(it) }.getOrNull() }
-        val stableRequired = args["compare"]?.jsonPrimitive?.contentOrNull == "stable"
+        val command = (args["command"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        if (command.isBlank()) return@withContext ToolResult("error: command is required", isError = true)
+        val runs = ((args["runs"] as? JsonPrimitive)?.intOrNull ?: ctx.settings.evidenceRecords).coerceIn(1, 10)
+        val mustPass = ((args["must_pass"] as? JsonPrimitive)?.intOrNull ?: ((runs + 1) / 2).coerceAtLeast(1)).coerceIn(1, runs)
+        val timeoutMs = ((args["timeout_ms"] as? JsonPrimitive)?.intOrNull ?: 60_000).coerceIn(500, 600_000).toLong()
+        val expectPattern = (args["expect"] as? JsonPrimitive)?.contentOrNull
+        val expectRegex = expectPattern?.let {
+            runCatching { Regex(it) }.getOrElse { ex ->
+                return@withContext ToolResult("error: invalid expect regex: ${ex.message}", isError = true)
+            }
+        }
+        val stableRequired = (args["compare"] as? JsonPrimitive)?.contentOrNull == "stable"
 
         data class RunEntry(val idx: Int, val exit: Int?, val ms: Long, val output: String, val hash: String, val matched: Boolean)
 
@@ -194,7 +200,7 @@ val reportTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        if (args["action"]?.jsonPrimitive?.contentOrNull == "list") {
+        if ((args["action"] as? JsonPrimitive)?.contentOrNull == "list") {
             val rows = ctx.store.listFindings()
             if (rows.isEmpty()) return ToolResult("no findings recorded yet")
             return ToolResult(
@@ -204,10 +210,10 @@ val reportTool = object : Tool {
             )
         }
 
-        val title = args["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val title = (args["title"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
         if (title.isEmpty()) return ToolResult("error: title is required", isError = true)
 
-        val vector = args["cvss_vector"]?.jsonPrimitive?.contentOrNull?.trim()
+        val vector = (args["cvss_vector"] as? JsonPrimitive)?.contentOrNull?.trim()
         val cvss = if (!vector.isNullOrEmpty()) {
             Cvss31Calculator.score(vector)
                 ?: return ToolResult(
@@ -215,15 +221,18 @@ val reportTool = object : Tool {
                     isError = true
                 )
         } else null
-        val severity = (args["severity"]?.jsonPrimitive?.contentOrNull ?: cvss?.severity ?: "medium").lowercase()
-        val asset = args["asset"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val cwe = args["cwe"]?.jsonPrimitive?.contentOrNull
-        val summary = args["summary"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val impact = args["impact"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val remediation = args["remediation"]?.jsonPrimitive?.contentOrNull
-        val steps = (args["steps"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: listOf("(not provided)")
-        val evidence = (args["evidence"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: listOf("(none)")
-        val references = (args["references"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+        val rawSeverity = (args["severity"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val severity = (rawSeverity ?: cvss?.severity ?: "medium").lowercase()
+        val asset = (args["asset"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val cwe = (args["cwe"] as? JsonPrimitive)?.contentOrNull
+        val summary = (args["summary"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val impact = (args["impact"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val remediation = (args["remediation"] as? JsonPrimitive)?.contentOrNull
+        val steps = (args["steps"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.ifEmpty { null }
+            ?: listOf("(not provided)")
+        val evidence = (args["evidence"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.ifEmpty { null }
+            ?: listOf("(none)")
+        val references = (args["references"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
 
         val slug = title.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(60).ifBlank { "finding" }
         val note = ctx.store.putNote(

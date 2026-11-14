@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -177,8 +178,11 @@ fun BorerApp(
                 navigateTo(ConsoleRoute)
             },
             onSelectSession = { session ->
-                resolvedVm.resumeSession(session)
-                navigateTo(ConsoleRoute)
+                if (resolvedVm.resumeSession(session)) {
+                    navigateTo(ConsoleRoute)
+                } else if (!isExpanded) {
+                    scope.launch { drawerState.close() }
+                }
             }
         )
     }
@@ -253,6 +257,9 @@ fun BorerApp(
             content = contentHost
         )
     } else {
+        BackHandler(enabled = drawerState.isOpen) {
+            scope.launch { drawerState.close() }
+        }
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {

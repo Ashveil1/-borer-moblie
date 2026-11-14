@@ -124,8 +124,16 @@ fun ConsoleScreen(
         }
     }
 
-    val lastTextLen = (state.entries.lastOrNull() as? TranscriptEntry.Assistant)?.text?.length ?: 0
-    LaunchedEffect(state.entries.size, lastTextLen) {
+    val lastEntry = state.entries.lastOrNull()
+    val lastContentSig = when (lastEntry) {
+        is TranscriptEntry.Assistant -> lastEntry.text.length
+        is TranscriptEntry.Reasoning -> lastEntry.text.length
+        is TranscriptEntry.ToolExec -> if (lastEntry.running) -1 else lastEntry.preview.length + 1
+        is TranscriptEntry.Info -> lastEntry.text.length
+        is TranscriptEntry.User -> lastEntry.text.length
+        null -> 0
+    }
+    LaunchedEffect(state.entries.size, lastContentSig) {
         if (state.entries.isNotEmpty()) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             if (lastVisible >= state.entries.lastIndex - 2 || state.entries.size <= 3) {
@@ -161,11 +169,7 @@ fun ConsoleScreen(
                     modifier = Modifier
                         .widthIn(max = 620.dp)
                         .fillMaxSize()
-                        .padding(horizontal = 20.dp),
-                    onPromptSuggestion = { inputText = it },
-                    onOpenSessions = onOpenSessions,
-                    onOpenIntel = onOpenIntel,
-                    onOpenLab = onOpenLab
+                        .padding(horizontal = 20.dp)
                 )
             } else {
                 LazyColumn(
@@ -390,84 +394,27 @@ private fun MinimalChatTopBar(
 
 @Composable
 private fun ChatEmptyState(
-    modifier: Modifier = Modifier,
-    onPromptSuggestion: (String) -> Unit,
-    onOpenSessions: () -> Unit,
-    onOpenIntel: () -> Unit,
-    onOpenLab: () -> Unit
+    modifier: Modifier = Modifier
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(56.dp)
-                .clip(CircleShape)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
-                .testTag("empty_prompt_glyph")
-        ) {
-            Text(
-                text = ">",
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.onBackground
-            )
-        }
-        Spacer(Modifier.height(20.dp))
         Text(
-            text = "What are we hunting today?",
-            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+            text = ">",
+            style = MaterialTheme.typography.displaySmall.copy(
+                fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 36.sp
+            ),
             color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center
+            modifier = Modifier.testTag("empty_prompt_glyph")
         )
-        Spacer(Modifier.height(28.dp))
-        val suggestions: List<Pair<String, () -> Unit>> = listOf(
-            "Plan an authorized test for my app" to {
-                onPromptSuggestion("Help me plan an authorized security test for my app: ")
-            },
-            "Resume a previous session" to onOpenSessions,
-            "Open the Security Lab" to onOpenLab,
-            "Review findings & reports" to onOpenIntel
-        )
-        suggestions.forEach { (label, action) ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .padding(vertical = 4.dp)
-                    .widthIn(max = 420.dp)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surface)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
-                    .clickable(onClick = action)
-                    .padding(horizontal = 16.dp, vertical = 13.dp)
-            ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
     }
 }
 
 @Composable
-internal fun UserBubble(entry: TranscriptEntry.User) {
+private fun UserBubble(entry: TranscriptEntry.User) {
     val bubbleShape = RoundedCornerShape(
         topStart = 20.dp,
         topEnd = 20.dp,
@@ -498,7 +445,7 @@ internal fun UserBubble(entry: TranscriptEntry.User) {
 }
 
 @Composable
-internal fun AssistantProse(
+private fun AssistantProse(
     entry: TranscriptEntry.Assistant,
     isStreaming: Boolean
 ) {
@@ -535,7 +482,7 @@ internal fun AssistantProse(
 }
 
 @Composable
-internal fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) {
+private fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -590,7 +537,7 @@ internal fun ThoughtRow(entry: TranscriptEntry.Reasoning, onToggle: () -> Unit) 
 }
 
 @Composable
-internal fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
+private fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
     var expanded by remember { mutableStateOf(false) }
     val argSummary = remember(entry.name, entry.arguments) {
         ToolSummaryFormatter.summarize(entry.name, entry.arguments)
@@ -736,7 +683,7 @@ internal fun ToolActionRow(entry: TranscriptEntry.ToolExec) {
 }
 
 @Composable
-internal fun SubtleInfoLine(entry: TranscriptEntry.Info) {
+private fun SubtleInfoLine(entry: TranscriptEntry.Info) {
     Row(
         horizontalArrangement = Arrangement.Center,
         modifier = Modifier
@@ -975,13 +922,6 @@ private fun FloatingPillComposer(
                     .heightIn(min = 48.dp)
                     .padding(horizontal = 6.dp, vertical = 10.dp)
             ) {
-                if (inputText.isEmpty()) {
-                    Text(
-                        text = "Message Borer",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 BasicTextField(
                     value = inputText,
                     onValueChange = onInputChange,
@@ -1005,7 +945,7 @@ private fun FloatingPillComposer(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .clickable(onClick = onStop)
+                        .clickable { if (stopRequested) onForceStop() else onStop() }
                         .testTag("composer_stop_button")
                 ) {
                     Box(

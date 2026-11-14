@@ -1,10 +1,11 @@
 package com.example.tools
 
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 private const val MAX_READ_BYTES = 2 * 1024 * 1024
@@ -27,15 +28,17 @@ val readTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val file = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        val rawPath = args["path"].asStr().orEmpty()
+        if (rawPath.isBlank()) return ToolResult("error: path is required", isError = true)
+        val file = resolveSafePath(ctx, rawPath)
         if (!file.exists()) return ToolResult("error: no such file: ${file.path}", isError = true)
         if (file.isDirectory) return ToolResult("error: ${file.path} is a directory; use ls", isError = true)
         if (file.length() > MAX_READ_BYTES) {
             return ToolResult("error: ${file.path} is ${file.length()} bytes; use recall or a smaller slice", isError = true)
         }
         val lines = file.readText().split('\n')
-        val offset = (args["offset"]?.jsonPrimitive?.intOrNull ?: 1).coerceAtLeast(1)
-        val limit = (args["limit"]?.jsonPrimitive?.intOrNull ?: 2000).coerceAtLeast(1)
+        val offset = (args["offset"].asInt() ?: 1).coerceAtLeast(1)
+        val limit = (args["limit"].asInt() ?: 2000).coerceAtLeast(1)
         val startIdx = (offset - 1).coerceAtMost(lines.size)
         val endIdx = (startIdx + limit).coerceAtMost(lines.size)
         val slice = lines.subList(startIdx, endIdx)
@@ -60,9 +63,12 @@ val writeTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val file = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        val rawPath = args["path"].asStr().orEmpty()
+        if (rawPath.isBlank()) return ToolResult("error: path is required", isError = true)
+        val file = resolveSafePath(ctx, rawPath)
+        if (file.isDirectory) return ToolResult("error: ${file.path} is a directory", isError = true)
         file.parentFile?.mkdirs()
-        file.writeText(args["content"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        file.writeText(args["content"].asStr().orEmpty())
         return ToolResult("wrote ${file.path} (${file.length()} bytes)")
     }
 }
@@ -81,13 +87,16 @@ val editTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val file = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        val rawPath = args["path"].asStr().orEmpty()
+        if (rawPath.isBlank()) return ToolResult("error: path is required", isError = true)
+        val file = resolveSafePath(ctx, rawPath)
         if (!file.exists()) return ToolResult("error: no such file: ${file.path}", isError = true)
+        if (file.isDirectory) return ToolResult("error: ${file.path} is a directory", isError = true)
         val before = file.readText()
-        val oldText = args["old_text"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val newText = args["new_text"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val replaceAll = args["all"]?.jsonPrimitive?.booleanOrNull == true
-        val count = if (oldText.isEmpty()) 0 else before.windowed(oldText.length, 1).count { it == oldText }
+        val oldText = args["old_text"].asStr().orEmpty()
+        val newText = args["new_text"].asStr().orEmpty()
+        val replaceAll = args["all"].asBool() == true
+        val count = countNonOverlapping(before, oldText)
         if (count == 0) return ToolResult("error: old_text not found", isError = true)
         if (count > 1 && !replaceAll) {
             return ToolResult("error: old_text appears $count times; add more context or pass all=true", isError = true)
@@ -110,10 +119,11 @@ val lsTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val dir = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull ?: ".")
+        val dir = resolveSafePath(ctx, args["path"].asStr() ?: ".")
         if (!dir.exists()) return ToolResult("error: no such directory: ${dir.path}", isError = true)
-        val showAll = args["all"]?.jsonPrimitive?.booleanOrNull == true
-        val depth = if (args["deep"]?.jsonPrimitive?.booleanOrNull == true) 2 else 0
+        if (dir.isFile) return ToolResult("${dir.name} (${dir.length()} bytes)")
+        val showAll = args["all"].asBool() == true
+        val depth = if (args["deep"].asBool() == true) 2 else 0
         val out = mutableListOf<String>()
         fun walk(cur: File, prefix: String, remDepth: Int) {
             if (out.size >= 400) return
@@ -146,9 +156,11 @@ val globTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val root = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull ?: ".")
-        val pattern = args["pattern"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 200
+        val root = resolveSafePath(ctx, args["path"].asStr() ?: ".")
+        if (!root.exists()) return ToolResult("error: no such directory: ${root.path}", isError = true)
+        val pattern = args["pattern"].asStr().orEmpty()
+        if (pattern.isBlank()) return ToolResult("error: pattern is required", isError = true)
+        val limit = (args["limit"].asInt() ?: 200).coerceAtLeast(1)
         val re = globToRegex(pattern)
         val files = root.walkTopDown()
             .filter { it.isFile && re.matches(it.relativeTo(root).path.replace(File.separatorChar, '/')) }
@@ -176,15 +188,17 @@ val grepTool = object : Tool {
     )
 
     override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult {
-        val target = resolveSafePath(ctx, args["path"]?.jsonPrimitive?.contentOrNull ?: ".")
-        val pattern = args["pattern"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val ignoreCase = args["ignore_case"]?.jsonPrimitive?.booleanOrNull == true
+        val target = resolveSafePath(ctx, args["path"].asStr() ?: ".")
+        if (!target.exists()) return ToolResult("error: no such path: ${target.path}", isError = true)
+        val pattern = args["pattern"].asStr().orEmpty()
+        if (pattern.isBlank()) return ToolResult("error: pattern is required", isError = true)
+        val ignoreCase = args["ignore_case"].asBool() == true
         val regex = runCatching {
             Regex(pattern, if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet())
         }.getOrElse { return ToolResult("error: invalid regex: ${it.message}", isError = true) }
-        val fileGlob = args["glob"]?.jsonPrimitive?.contentOrNull?.let { globToRegex(it) }
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 200
-        val contextLines = args["context"]?.jsonPrimitive?.intOrNull ?: 0
+        val fileGlob = args["glob"].asStr()?.let { globToRegex(it) }
+        val limit = (args["limit"].asInt() ?: 200).coerceAtLeast(1)
+        val contextLines = (args["context"].asInt() ?: 0).coerceAtLeast(0)
         val hits = mutableListOf<String>()
 
         fun scan(f: File) {
@@ -235,3 +249,20 @@ private fun globToRegex(pattern: String): Regex {
 }
 
 val fsTools = listOf(readTool, writeTool, editTool, lsTool, globTool, grepTool)
+
+private fun countNonOverlapping(haystack: String, needle: String): Int {
+    if (needle.isEmpty()) return 0
+    var count = 0
+    var idx = 0
+    while (true) {
+        val found = haystack.indexOf(needle, idx)
+        if (found < 0) break
+        count++
+        idx = found + needle.length
+    }
+    return count
+}
+
+private fun JsonElement?.asStr(): String? = (this as? JsonPrimitive)?.contentOrNull
+private fun JsonElement?.asInt(): Int? = (this as? JsonPrimitive)?.intOrNull
+private fun JsonElement?.asBool(): Boolean? = (this as? JsonPrimitive)?.booleanOrNull
