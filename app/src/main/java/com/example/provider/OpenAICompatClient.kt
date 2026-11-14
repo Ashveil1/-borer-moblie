@@ -442,6 +442,7 @@ class OpenAICompatClient(
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(10, TimeUnit.MINUTES)
                 .writeTimeout(60, TimeUnit.SECONDS)
+                .pingInterval(30, TimeUnit.SECONDS)
                 .build()
         }
     }

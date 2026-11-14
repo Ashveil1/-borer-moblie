@@ -4,6 +4,10 @@ import android.app.Application
 import com.example.data.LearningMemory
 import com.example.data.MemoryDatabase
 import com.example.data.RunDatabase
+import com.example.session.BorerSessionController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.io.File
 
 class BorerApplication : Application() {
@@ -17,6 +21,9 @@ class BorerApplication : Application() {
         private set
     lateinit var runsDir: File
         private set
+
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val sessionController: BorerSessionController by lazy { BorerSessionController(this, appScope) }
 
     override fun onCreate() {
         super.onCreate()

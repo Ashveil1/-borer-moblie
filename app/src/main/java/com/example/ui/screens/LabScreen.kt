@@ -1,12 +1,10 @@
 package com.example.ui.screens
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -16,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,25 +28,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -60,8 +50,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.tools.BorerSkill
@@ -69,6 +59,7 @@ import com.example.tools.DiffEngine
 import com.example.tools.MutateEngine
 import com.example.tools.TransformEngine
 import com.example.ui.BorerViewModel
+import com.example.ui.theme.JetBrainsMonoFontFamily
 
 @Composable
 fun LabScreen(
@@ -85,6 +76,7 @@ fun LabScreen(
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .imePadding()
     ) {
         CleanScreenTopBar(
             title = "Security Lab",
@@ -111,7 +103,7 @@ fun LabScreen(
             ),
             selectedIndex = tabIdx,
             onSelect = { tabIdx = it },
-            modifier = Modifier.widthIn(max = 760.dp)
+            modifier = Modifier.widthIn(max = BorerTokens.ScreenMaxWidth)
         )
 
         when (tabIdx) {
@@ -132,7 +124,9 @@ private fun MemoryPane(vm: BorerViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             HairlineCard {
@@ -143,19 +137,18 @@ private fun MemoryPane(vm: BorerViewModel) {
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
                         Text("Cross-Session Memory", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(3.dp))
                         Text(
                             "${experiences.size} experience · ${techniques.size} techniques · ${targets.size} hosts",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Button(
+                    CleanPrimaryButton(
                         onClick = { showAddExp = true },
-                        shape = RoundedCornerShape(24.dp),
-                        modifier = Modifier.minimumInteractiveComponentSize().testTag("add_memory_button")
+                        modifier = Modifier.testTag("add_memory_button")
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add experience")
+                        Icon(Icons.Outlined.Add, contentDescription = "Add experience", modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Record")
                     }
@@ -168,15 +161,17 @@ private fun MemoryPane(vm: BorerViewModel) {
                 HairlineCard {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp, horizontal = 12.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Psychology,
                             contentDescription = "No memory",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(28.dp)
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
                         Text("No learned memory yet", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
                         Text(
@@ -202,23 +197,16 @@ private fun MemoryPane(vm: BorerViewModel) {
                             ) {
                                 Text(t.situation, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                                 Spacer(Modifier.width(8.dp))
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = "${(t.score * 100).toInt()}% · ${t.success}/${t.attempts}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                    )
-                                }
+                                CleanStatusBadge(
+                                    text = "${(t.score * 100).toInt()}% · ${t.success}/${t.attempts}",
+                                    inverted = t.score >= 0.7
+                                )
                             }
                             Spacer(Modifier.height(6.dp))
                             Text(t.steps, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { vm.deleteTechnique(t.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete technique", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete technique", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -236,20 +224,19 @@ private fun MemoryPane(vm: BorerViewModel) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(e.fingerprint, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = "${(e.score * 100).toInt()}% · ${e.success}/${e.attempts}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                    )
-                                }
+                                Text(
+                                    text = e.fingerprint,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                CleanStatusBadge(
+                                    text = "${(e.score * 100).toInt()}% · ${e.success}/${e.attempts}",
+                                    inverted = e.score >= 0.7
+                                )
                             }
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(6.dp))
                             Text(e.approach, style = MaterialTheme.typography.bodyLarge)
                             if (e.outcome.isNotBlank()) {
                                 Spacer(Modifier.height(2.dp))
@@ -257,7 +244,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                             }
                         }
                         IconButton(onClick = { vm.deleteExperience(e.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete experience", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete experience", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -270,13 +257,23 @@ private fun MemoryPane(vm: BorerViewModel) {
                 HairlineCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("${h.host} · ${h.visits} visits", style = MaterialTheme.typography.titleMedium)
-                            if (h.profile.isNotBlank()) Text("stack: ${h.profile}", style = MaterialTheme.typography.bodySmall)
-                            if (h.findings.isNotBlank()) Text("found: ${h.findings}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-                            if (h.deadEnds.isNotBlank()) Text("dead ends: ${h.deadEnds}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                text = "${h.host} · ${h.visits} visits",
+                                style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMonoFontFamily)
+                            )
+                            if (h.profile.isNotBlank()) {
+                                Spacer(Modifier.height(3.dp))
+                                Text("stack: ${h.profile}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (h.findings.isNotBlank()) {
+                                Text("found: ${h.findings}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                            }
+                            if (h.deadEnds.isNotBlank()) {
+                                Text("dead ends: ${h.deadEnds}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                         IconButton(onClick = { vm.deleteTargetHistory(h.host) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete target", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete target", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -293,20 +290,43 @@ private fun MemoryPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { showAddExp = false },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Record Experience") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = fp, onValueChange = { fp = it }, label = { Text("Fingerprint (stack|vuln)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = approach, onValueChange = { approach = it }, label = { Text("Approach tried") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = outcome, onValueChange = { outcome = it }, label = { Text("Outcome / signal") }, modifier = Modifier.fillMaxWidth())
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("Worked?")
-                        Switch(checked = worked, onCheckedChange = { worked = it })
+                    CleanOutlinedTextField(
+                        value = fp,
+                        onValueChange = { fp = it },
+                        label = "Fingerprint (stack|vuln)",
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    CleanOutlinedTextField(
+                        value = approach,
+                        onValueChange = { approach = it },
+                        label = "Approach tried",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    CleanOutlinedTextField(
+                        value = outcome,
+                        onValueChange = { outcome = it },
+                        label = "Outcome / signal",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Worked?", style = MaterialTheme.typography.bodyMedium)
+                        CleanSwitch(checked = worked, onCheckedChange = { worked = it })
                     }
                 }
             },
             confirmButton = {
-                Button(
+                CleanPrimaryButton(
                     onClick = {
                         vm.addExperience(fp, approach, outcome, worked)
                         showAddExp = false
@@ -322,7 +342,6 @@ private fun MemoryPane(vm: BorerViewModel) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkbenchPane() {
-    val context = LocalContext.current
     var toolMode by remember { mutableIntStateOf(0) }
     var tfOp by remember { mutableStateOf("base64") }
     var tfInput by remember { mutableStateOf("borer security test") }
@@ -337,37 +356,23 @@ private fun WorkbenchPane() {
     var diffA by remember { mutableStateOf("HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"ok\":true,\"role\":\"guest\"}") }
     var diffB by remember { mutableStateOf("HTTP/1.1 403 Forbidden\nContent-Type: application/json\n\n{\"ok\":false,\"error\":\"denied\"}") }
 
-    fun copyToClipboard(label: String, text: String) {
-        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText(label, text))
-    }
-
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                SegmentedButton(
-                    selected = toolMode == 0,
-                    onClick = { toolMode = 0 },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
-                    modifier = Modifier.testTag("wb_transform")
-                ) { Text("Transform", maxLines = 1) }
-                SegmentedButton(
-                    selected = toolMode == 1,
-                    onClick = { toolMode = 1 },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
-                    modifier = Modifier.testTag("wb_mutate")
-                ) { Text("Mutate", maxLines = 1) }
-                SegmentedButton(
-                    selected = toolMode == 2,
-                    onClick = { toolMode = 2 },
-                    shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
-                    modifier = Modifier.testTag("wb_diff")
-                ) { Text("Diff", maxLines = 1) }
-            }
+            CleanSegmentedControl(
+                options = listOf(
+                    SegmentTab("Transform", "wb_transform"),
+                    SegmentTab("Mutate", "wb_mutate"),
+                    SegmentTab("Diff", "wb_diff")
+                ),
+                selectedIndex = toolMode,
+                onSelect = { toolMode = it }
+            )
         }
 
         when (toolMode) {
@@ -379,35 +384,53 @@ private fun WorkbenchPane() {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     HairlineCard {
                         Text("Operation", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.horizontalScroll(rememberScrollState())
                         ) {
                             TransformEngine.supportedOps.forEach { op ->
-                                FilterChip(selected = tfOp == op, onClick = { tfOp = op }, label = { Text(op) })
+                                CleanFilterPill(label = op, selected = tfOp == op, onClick = { tfOp = op })
                             }
                         }
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
+                        Spacer(Modifier.height(12.dp))
+                        CleanOutlinedTextField(
                             value = tfInput,
                             onValueChange = { tfInput = it },
-                            label = { Text("Input") },
+                            label = "Input",
                             minLines = 3,
-                            shape = RoundedCornerShape(14.dp),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             modifier = Modifier.fillMaxWidth()
                         )
                         if (tfOp == "hash" || tfOp == "hmac") {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(value = tfAlgo, onValueChange = { tfAlgo = it }, label = { Text("Algorithm (md5|sha1|sha256|sha512)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            CleanOutlinedTextField(
+                                value = tfAlgo,
+                                onValueChange = { tfAlgo = it },
+                                label = "Algorithm (md5|sha1|sha256|sha512)",
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                         if (tfOp == "hmac") {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(value = tfKey, onValueChange = { tfKey = it }, label = { Text("HMAC Key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            CleanOutlinedTextField(
+                                value = tfKey,
+                                onValueChange = { tfKey = it },
+                                label = "HMAC Key",
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                         if (tfOp == "case") {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(value = tfOffset, onValueChange = { tfOffset = it }, label = { Text("Caesar Offset") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            CleanOutlinedTextField(
+                                value = tfOffset,
+                                onValueChange = { tfOffset = it },
+                                label = "Caesar Offset",
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
 
@@ -418,13 +441,9 @@ private fun WorkbenchPane() {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Output", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            IconButton(
-                                onClick = { copyToClipboard("transform", output) },
-                                modifier = Modifier.minimumInteractiveComponentSize()
-                            ) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy output", modifier = Modifier.size(16.dp))
-                            }
+                            CopyActionChip(label = "transform", textToCopy = output)
                         }
+                        Spacer(Modifier.height(8.dp))
                         SelectionContainer {
                             Text(
                                 text = output,
@@ -446,15 +465,15 @@ private fun WorkbenchPane() {
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     HairlineCard {
-                        OutlinedTextField(
+                        CleanOutlinedTextField(
                             value = mutSeed,
                             onValueChange = { mutSeed = it },
-                            label = { Text("Seed payload") },
+                            label = "Seed payload",
                             singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text("Rules", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
                         FlowRow(
@@ -462,14 +481,14 @@ private fun WorkbenchPane() {
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             MutateEngine.allRules.forEach { r ->
-                                FilterChip(
+                                CleanFilterPill(
+                                    label = r,
                                     selected = r in mutRules,
-                                    onClick = { mutRules = if (r in mutRules) mutRules - r else mutRules + r },
-                                    label = { Text(r) }
+                                    onClick = { mutRules = if (r in mutRules) mutRules - r else mutRules + r }
                                 )
                             }
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text("Wrapper Contexts", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
                         FlowRow(
@@ -477,10 +496,10 @@ private fun WorkbenchPane() {
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             MutateEngine.allContexts.forEach { c ->
-                                FilterChip(
+                                CleanFilterPill(
+                                    label = c,
                                     selected = c in mutContexts,
-                                    onClick = { mutContexts = if (c in mutContexts) mutContexts - c else mutContexts + c },
-                                    label = { Text(c) }
+                                    onClick = { mutContexts = if (c in mutContexts) mutContexts - c else mutContexts + c }
                                 )
                             }
                         }
@@ -493,16 +512,22 @@ private fun WorkbenchPane() {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Generated Variants (${variants.size})", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            IconButton(
-                                onClick = { copyToClipboard("variants", variants.joinToString("\n") { it.value }) },
-                                modifier = Modifier.minimumInteractiveComponentSize()
-                            ) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy variants", modifier = Modifier.size(16.dp))
-                            }
+                            CopyActionChip(
+                                label = "variants",
+                                textToCopy = variants.joinToString("\n") { it.value }
+                            )
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                                    .padding(12.dp)
+                            ) {
                                 variants.forEach { v ->
                                     Text("${v.index}. (${v.how}) ${v.value}", style = MaterialTheme.typography.bodySmall)
                                 }
@@ -516,15 +541,45 @@ private fun WorkbenchPane() {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     HairlineCard {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            OutlinedTextField(value = diffA, onValueChange = { diffA = it }, label = { Text("Baseline (A)") }, minLines = 4, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = diffB, onValueChange = { diffB = it }, label = { Text("Probe (B)") }, minLines = 4, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth())
+                            CleanOutlinedTextField(
+                                value = diffA,
+                                onValueChange = { diffA = it },
+                                label = "Baseline (A)",
+                                minLines = 4,
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            CleanOutlinedTextField(
+                                value = diffB,
+                                onValueChange = { diffB = it },
+                                label = "Probe (B)",
+                                minLines = 4,
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                     HairlineCard {
-                        Text("Structural Diff", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Structural Diff", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            CopyActionChip(label = "structural diff", textToCopy = diffResult)
+                        }
                         Spacer(Modifier.height(8.dp))
                         SelectionContainer {
-                            Text(diffResult, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                text = diffResult,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.background)
+                                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                                    .padding(12.dp)
+                            )
                         }
                     }
                 }
@@ -542,7 +597,9 @@ private fun SkillsPane(vm: BorerViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             Row(
@@ -554,12 +611,8 @@ private fun SkillsPane(vm: BorerViewModel) {
                     title = "Playbooks (.borer/skills)",
                     modifier = Modifier.weight(1f)
                 )
-                Button(
-                    onClick = { showCreate = true },
-                    shape = RoundedCornerShape(24.dp),
-                    modifier = Modifier.minimumInteractiveComponentSize()
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add skill")
+                CleanPrimaryButton(onClick = { showCreate = true }) {
+                    Icon(Icons.Outlined.Add, contentDescription = "Add skill", modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("New Skill")
                 }
@@ -570,15 +623,17 @@ private fun SkillsPane(vm: BorerViewModel) {
                 HairlineCard {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Terminal,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(28.dp)
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
                         Text("No skill playbooks yet", style = MaterialTheme.typography.titleMedium)
                     }
                 }
@@ -591,13 +646,16 @@ private fun SkillsPane(vm: BorerViewModel) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(s.name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = s.name,
+                                style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMonoFontFamily)
+                            )
                             Spacer(Modifier.height(4.dp))
                             Text(s.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(Modifier.width(8.dp))
                         Icon(
-                            imageVector = Icons.Rounded.ChevronRight,
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                             contentDescription = "Inspect skill",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -611,9 +669,28 @@ private fun SkillsPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { selected = null },
             containerColor = MaterialTheme.colorScheme.surface,
-            title = { Text(sk.name) },
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+            title = {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = sk.name,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    CopyActionChip(label = "playbook", textToCopy = sk.body)
+                }
+            },
             text = {
-                Text(sk.body, style = MaterialTheme.typography.bodySmall, modifier = Modifier.verticalScroll(rememberScrollState()))
+                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    MarkdownProse(text = sk.body)
+                }
             },
             confirmButton = { TextButton(onClick = { selected = null }) { Text("Close") } }
         )
@@ -626,16 +703,25 @@ private fun SkillsPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { showCreate = false },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Create Skill Playbook") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name (slug)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Description") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("Markdown instructions") }, minLines = 4, modifier = Modifier.fillMaxWidth())
+                    CleanOutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = "Name (slug)",
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    CleanOutlinedTextField(value = desc, onValueChange = { desc = it }, label = "Description", singleLine = true, modifier = Modifier.fillMaxWidth())
+                    CleanOutlinedTextField(value = body, onValueChange = { body = it }, label = "Markdown instructions", minLines = 4, modifier = Modifier.fillMaxWidth())
                 }
             },
             confirmButton = {
-                Button(
+                CleanPrimaryButton(
                     onClick = { vm.saveCustomSkill(name, desc, body); showCreate = false },
                     enabled = name.isNotBlank() && body.isNotBlank()
                 ) { Text("Save") }

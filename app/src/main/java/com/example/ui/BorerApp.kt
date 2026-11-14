@@ -1,5 +1,7 @@
 package com.example.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,14 +26,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Biotech
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -43,6 +46,7 @@ import androidx.compose.material3.PermanentDrawerSheet
 import androidx.compose.material3.PermanentNavigationDrawer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
@@ -55,13 +59,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -70,11 +78,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.BorerApplication
 import com.example.data.SessionEntity
 import com.example.data.SessionFiles
 import com.example.ui.screens.ConsoleScreen
 import com.example.ui.screens.IntelScreen
 import com.example.ui.screens.LabScreen
+import com.example.ui.screens.SectionHeader
 import com.example.ui.screens.SessionsScreen
 import com.example.ui.screens.SettingsScreen
 import kotlinx.coroutines.launch
@@ -113,8 +123,17 @@ private val drawerNavItems = listOf(
 @Composable
 fun BorerApp(
     widthSizeClass: WindowWidthSizeClass,
-    vm: BorerViewModel = viewModel()
+    vm: BorerViewModel? = null
 ) {
+    val app = LocalContext.current.applicationContext as BorerApplication
+    val resolvedVm: BorerViewModel = vm ?: viewModel(
+        factory = remember(app) {
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T = BorerViewModel(app) as T
+            }
+        }
+    )
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDest = backStackEntry?.destination
@@ -123,9 +142,9 @@ fun BorerApp(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    val activeSessions by vm.activeSessions.collectAsStateWithLifecycle()
-    val activeRunId by vm.activeRunId.collectAsStateWithLifecycle()
-    val consoleState by vm.console.collectAsStateWithLifecycle()
+    val activeSessions by resolvedVm.activeSessions.collectAsStateWithLifecycle()
+    val activeRunId by resolvedVm.activeRunId.collectAsStateWithLifecycle()
+    val consoleState by resolvedVm.console.collectAsStateWithLifecycle()
 
     fun navigateTo(route: Any) {
         navController.navigate(route) {
@@ -154,11 +173,11 @@ fun BorerApp(
             consoleState = consoleState,
             onNavigate = ::navigateTo,
             onNewChat = {
-                vm.startNewSession()
+                resolvedVm.startNewSession()
                 navigateTo(ConsoleRoute)
             },
             onSelectSession = { session ->
-                vm.resumeSession(session)
+                resolvedVm.resumeSession(session)
                 navigateTo(ConsoleRoute)
             }
         )
@@ -176,7 +195,7 @@ fun BorerApp(
             ) {
                 composable<ConsoleRoute> {
                     ConsoleScreen(
-                        vm = vm,
+                        vm = resolvedVm,
                         onOpenDrawer = openDrawer,
                         onOpenSessions = { navigateTo(SessionsRoute) },
                         onOpenIntel = { navigateTo(IntelRoute) },
@@ -186,27 +205,27 @@ fun BorerApp(
                 }
                 composable<SessionsRoute> {
                     SessionsScreen(
-                        vm = vm,
+                        vm = resolvedVm,
                         onOpenDrawer = openDrawer,
                         onResumedOrStarted = { navigateTo(ConsoleRoute) }
                     )
                 }
                 composable<IntelRoute> {
                     IntelScreen(
-                        vm = vm,
+                        vm = resolvedVm,
                         onOpenDrawer = openDrawer
                     )
                 }
                 composable<LabRoute> {
                     LabScreen(
-                        vm = vm,
+                        vm = resolvedVm,
                         onOpenDrawer = openDrawer,
                         onOpenSettings = { navigateTo(SettingsRoute) }
                     )
                 }
                 composable<SettingsRoute> {
                     SettingsScreen(
-                        vm = vm,
+                        vm = resolvedVm,
                         onOpenDrawer = openDrawer
                     )
                 }
@@ -221,9 +240,14 @@ fun BorerApp(
                     drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     windowInsets = WindowInsets(0, 0, 0, 0),
-                    modifier = Modifier.width(280.dp)
+                    modifier = Modifier.width(284.dp)
                 ) {
-                    drawerBody()
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            drawerBody()
+                        }
+                        VerticalDivider(color = MaterialTheme.colorScheme.outline)
+                    }
                 }
             },
             content = contentHost
@@ -236,7 +260,7 @@ fun BorerApp(
                     drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     windowInsets = WindowInsets(0, 0, 0, 0),
-                    modifier = Modifier.width(300.dp)
+                    modifier = Modifier.width(304.dp)
                 ) {
                     drawerBody()
                 }
@@ -261,6 +285,12 @@ private fun BorerDrawerContent(
     onSelectSession: (SessionEntity) -> Unit
 ) {
     var search by remember { mutableStateOf("") }
+    var searchFocused by remember { mutableStateOf(false) }
+    val searchBorder by animateColorAsState(
+        targetValue = if (searchFocused) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.outline,
+        animationSpec = tween(150),
+        label = "drawer_search_border"
+    )
     val filteredSessions = remember(sessions, search) {
         if (search.isBlank()) sessions.take(25)
         else sessions.filter {
@@ -276,7 +306,7 @@ private fun BorerDrawerContent(
             .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        // Search + New Chat row (ChatGPT sidebar style)
+        // Search + New Chat row
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -288,18 +318,21 @@ private fun BorerDrawerContent(
                     .weight(1f)
                     .height(44.dp)
                     .clip(RoundedCornerShape(22.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(22.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, searchBorder, RoundedCornerShape(22.dp))
                     .padding(horizontal = 14.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.Search,
+                    imageVector = Icons.Outlined.Search,
                     contentDescription = "Search chats",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    contentAlignment = Alignment.CenterStart,
+                    modifier = Modifier.weight(1f)
+                ) {
                     if (search.isEmpty()) {
                         Text(
                             text = "Search chats",
@@ -315,7 +348,9 @@ private fun BorerDrawerContent(
                             color = MaterialTheme.colorScheme.onSurface
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { searchFocused = it.isFocused }
                     )
                 }
                 if (search.isNotEmpty()) {
@@ -331,73 +366,98 @@ private fun BorerDrawerContent(
                 }
             }
 
-            IconButton(
-                onClick = onNewChat,
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("drawer_new_chat_button")
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.EditNote,
-                    contentDescription = "New chat",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
+                IconButton(
+                    onClick = onNewChat,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("drawer_new_chat_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.EditNote,
+                        contentDescription = "New chat",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // Workspace navigation links
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            drawerNavItems.forEach { item ->
+                val selected = when (item.route) {
+                    ConsoleRoute -> currentDestIsConsole
+                    SessionsRoute -> currentDestIsSessions
+                    IntelRoute -> currentDestIsIntel
+                    LabRoute -> currentDestIsLab
+                    SettingsRoute -> currentDestIsSettings
+                    else -> false
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.surfaceContainerHigh
+                            else Color.Transparent
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable { onNavigate(item.route) }
+                        .padding(horizontal = 12.dp)
+                        .testTag(item.tag)
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = item.label,
+                        tint = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                        ),
+                        color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (selected) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                }
             }
         }
 
         Spacer(Modifier.height(12.dp))
-
-        // Workspace navigation links
-        drawerNavItems.forEach { item ->
-            val selected = when (item.route) {
-                ConsoleRoute -> currentDestIsConsole
-                SessionsRoute -> currentDestIsSessions
-                IntelRoute -> currentDestIsIntel
-                LabRoute -> currentDestIsLab
-                SettingsRoute -> currentDestIsSettings
-                else -> false
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.surfaceContainerHigh
-                        else Color.Transparent
-                    )
-                    .clickable { onNavigate(item.route) }
-                    .padding(horizontal = 12.dp)
-                    .testTag(item.tag)
-            ) {
-                Icon(
-                    imageVector = item.icon,
-                    contentDescription = item.label,
-                    tint = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = item.label,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                    ),
-                    color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Spacer(Modifier.height(10.dp))
 
-        Text(
-            text = "Recent",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        SectionHeader(
+            title = "Recent",
+            trailing = filteredSessions.size.takeIf { it > 0 }?.toString(),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
 
         LazyColumn(
@@ -427,6 +487,11 @@ private fun BorerDrawerContent(
                                 if (isActive) MaterialTheme.colorScheme.surfaceContainerHigh
                                 else Color.Transparent
                             )
+                            .border(
+                                width = 1.dp,
+                                color = if (isActive) MaterialTheme.colorScheme.outline else Color.Transparent,
+                                shape = RoundedCornerShape(10.dp)
+                            )
                             .clickable { onSelectSession(session) }
                             .padding(horizontal = 12.dp, vertical = 10.dp)
                             .testTag("drawer_session_${session.id}")
@@ -436,7 +501,7 @@ private fun BorerDrawerContent(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.secondary)
+                                    .background(MaterialTheme.colorScheme.primary)
                             )
                             Spacer(Modifier.width(8.dp))
                         }
@@ -462,52 +527,41 @@ private fun BorerDrawerContent(
         }
 
         Spacer(Modifier.height(8.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Spacer(Modifier.height(8.dp))
 
-        // Bottom minimal status row
+        // Bottom minimal status card
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
                 .clickable { onNavigate(SettingsRoute) }
-                .padding(horizontal = 10.dp, vertical = 10.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-            ) {
-                Text(
-                    text = "B",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Borer",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
                             .size(6.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (consoleState.providerConfigured) MaterialTheme.colorScheme.secondary
-                                else MaterialTheme.colorScheme.tertiary
+                            .then(
+                                if (consoleState.providerConfigured) {
+                                    Modifier.background(MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Modifier.border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape)
+                                }
                             )
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (consoleState.providerConfigured) consoleState.activeModel else "Tap to configure provider",
+                        text = if (consoleState.providerConfigured) consoleState.activeModel else "Configure provider",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -515,6 +569,12 @@ private fun BorerDrawerContent(
                     )
                 }
             }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "Open Settings",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }

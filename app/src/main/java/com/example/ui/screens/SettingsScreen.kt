@@ -1,8 +1,10 @@
 package com.example.ui.screens
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,46 +32,42 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,15 +79,21 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.ApiKind
 import com.example.data.ContextSource
 import com.example.data.NotifyConfig
 import com.example.data.ProviderProfile
 import com.example.data.ShellBackend
+import com.example.runtime.BackgroundKeepAliveController
 import com.example.runtime.UbuntuProotRuntime
 import com.example.ui.BorerViewModel
+import com.example.ui.theme.JetBrainsMonoFontFamily
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private data class ProviderPreset(
     val label: String,
@@ -112,43 +117,75 @@ fun SettingsScreen(
     onOpenDrawer: (() -> Unit)?
 ) {
     var tabIdx by remember { mutableIntStateOf(0) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    fun showFeedback(message: String) {
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .imePadding()
     ) {
-        CleanScreenTopBar(
-            title = "Settings",
-            onOpenDrawer = onOpenDrawer
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            CleanScreenTopBar(
+                title = "Settings",
+                onOpenDrawer = onOpenDrawer
+            )
 
-        CleanSegmentBar(
-            tabs = listOf(
-                "Providers" to "tab_settings_providers",
-                "Runtime" to "tab_settings_runtime",
-                "Agent" to "tab_settings_agent",
-                "Alerts" to "tab_settings_alerts"
-            ),
-            selectedIndex = tabIdx,
-            onSelect = { tabIdx = it },
-            modifier = Modifier.widthIn(max = 760.dp)
-        )
+            CleanSegmentBar(
+                tabs = listOf(
+                    "Providers" to "tab_settings_providers",
+                    "Runtime" to "tab_settings_runtime",
+                    "Agent" to "tab_settings_agent",
+                    "Alerts" to "tab_settings_alerts"
+                ),
+                selectedIndex = tabIdx,
+                onSelect = { tabIdx = it },
+                modifier = Modifier.widthIn(max = BorerTokens.ScreenMaxWidth)
+            )
 
-        when (tabIdx) {
-            0 -> ProvidersSettingsPane(vm)
-            1 -> RuntimeSettingsPane(vm)
-            2 -> AgentSettingsPane(vm)
-            else -> AlertsSettingsPane(vm)
+            when (tabIdx) {
+                0 -> ProvidersSettingsPane(vm, onFeedback = ::showFeedback)
+                1 -> RuntimeSettingsPane(vm, onFeedback = ::showFeedback)
+                2 -> AgentSettingsPane(vm, onFeedback = ::showFeedback)
+                else -> AlertsSettingsPane(vm, onFeedback = ::showFeedback)
+            }
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) { data ->
+            Snackbar(
+                snackbarData = data,
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+            )
         }
     }
 }
 
 @Composable
-private fun ProvidersSettingsPane(vm: BorerViewModel) {
+private fun ProvidersSettingsPane(
+    vm: BorerViewModel,
+    onFeedback: (String) -> Unit
+) {
     val cfg by vm.config.collectAsStateWithLifecycle()
     val testResult by vm.providerTestResult.collectAsStateWithLifecycle()
     val testing by vm.providerTesting.collectAsStateWithLifecycle()
@@ -161,7 +198,9 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             HairlineCard {
@@ -179,16 +218,15 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Button(
+                    CleanPrimaryButton(
                         onClick = {
                             editingIndex = null
                             editingInitial = null
                             editorOpen = true
                         },
-                        shape = RoundedCornerShape(24.dp),
-                        modifier = Modifier.minimumInteractiveComponentSize().testTag("add_provider_button")
+                        modifier = Modifier.testTag("add_provider_button")
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add provider")
+                        Icon(Icons.Outlined.Add, contentDescription = "Add provider", modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Add")
                     }
@@ -203,34 +241,24 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
                         .horizontalScroll(rememberScrollState())
                 ) {
                     providerPresets.forEach { preset ->
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            shape = RoundedCornerShape(18.dp),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(18.dp))
-                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp))
-                                .clickable {
-                                    editingIndex = null
-                                    editingInitial = ProviderProfile(
-                                        id = preset.name,
-                                        name = preset.name,
-                                        baseUrl = preset.baseUrl,
-                                        model = preset.model,
-                                        apiKey = "",
-                                        api = preset.api,
-                                        contextWindow = 0,
-                                        contextSource = ContextSource.FALLBACK
-                                    )
-                                    editorOpen = true
-                                }
-                        ) {
-                            Text(
-                                text = "+ ${preset.label}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                            )
-                        }
+                        CleanFilterPill(
+                            label = "+ ${preset.label}",
+                            selected = false,
+                            onClick = {
+                                editingIndex = null
+                                editingInitial = ProviderProfile(
+                                    id = preset.name,
+                                    name = preset.name,
+                                    baseUrl = preset.baseUrl,
+                                    model = preset.model,
+                                    apiKey = "",
+                                    api = preset.api,
+                                    contextWindow = 0,
+                                    contextSource = ContextSource.FALLBACK
+                                )
+                                editorOpen = true
+                            }
+                        )
                     }
                 }
             }
@@ -238,17 +266,52 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
 
         if (testResult != null || testing) {
             item {
-                HairlineCard {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (testing) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text(
-                            text = if (testing) "Testing provider endpoint..." else testResult.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (testResult?.startsWith("OK") == true) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                val isOk = testResult?.startsWith("OK") == true
+                val borderColor = when {
+                    testing -> MaterialTheme.colorScheme.outlineVariant
+                    isOk -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.outlineVariant
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+                        .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp)
+                ) {
+                    if (testing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
                         )
+                    } else {
+                        CleanStatusBadge(
+                            text = if (isOk) "OK" else "FAIL",
+                            inverted = isOk
+                        )
+                    }
+                    Text(
+                        text = if (testing) "Testing provider endpoint..." else testResult.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (testing) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (!testing) {
+                        IconButton(
+                            onClick = { vm.clearProviderTestResult() },
+                            modifier = Modifier.minimumInteractiveComponentSize()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Dismiss test result",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -271,46 +334,42 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
                 SectionHeader(title = "Active Chain", trailing = "${cfg.providers.size} configured")
             }
             itemsIndexed(cfg.providers, key = { i, p -> "${i}_${p.id}_${p.model}" }) { idx, p ->
-                HairlineCard(highlighted = idx == 0) {
+                val isPrimary = idx == 0
+                HairlineCard(highlighted = isPrimary) {
                     Row(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(if (idx == 0) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant)
-                            )
-                            Text(
-                                text = if (idx == 0) "Primary · ${p.name}" else "Fallback #${idx + 1} · ${p.name}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (idx == 0) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            shape = RoundedCornerShape(8.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
+                            CleanStatusBadge(
+                                text = if (isPrimary) "PRIMARY" else "#${idx + 1}",
+                                inverted = isPrimary
+                            )
                             Text(
-                                text = "${p.api.name.lowercase()} · ${formatCtx(p.contextWindow)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                text = p.name,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (isPrimary) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        Spacer(Modifier.width(8.dp))
+                        CleanStatusBadge(text = "${p.api.name.lowercase()} · ${formatCtx(p.contextWindow)}")
                     }
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
                     Text(
                         text = p.model,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMonoFontFamily),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         text = "${p.baseUrl} · ${maskKey(p.apiKey)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -319,60 +378,67 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        OutlinedButton(
+                        CleanOutlinedButton(
                             onClick = { vm.testProviderConnection(p) },
                             enabled = !testing,
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.minimumInteractiveComponentSize()
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = "Test provider", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Outlined.PlayArrow, contentDescription = "Test provider", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Test")
                         }
                         Spacer(Modifier.width(8.dp))
-                        OutlinedButton(
+                        CleanOutlinedButton(
                             onClick = {
                                 editingIndex = idx
                                 editingInitial = p
                                 editorOpen = true
                             },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.minimumInteractiveComponentSize()
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Icon(Icons.Filled.Edit, contentDescription = "Edit provider", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Outlined.Edit, contentDescription = "Edit provider", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Edit")
                         }
                         Spacer(Modifier.weight(1f))
                         if (idx > 0) {
                             IconButton(
-                                onClick = { vm.moveProvider(idx, -1) },
+                                onClick = {
+                                    vm.moveProvider(idx, -1)
+                                    onFeedback("Moved '${p.name}' up")
+                                },
                                 modifier = Modifier.minimumInteractiveComponentSize()
                             ) {
-                                Icon(Icons.Filled.ArrowUpward, contentDescription = "Move priority up")
+                                Icon(Icons.Outlined.ArrowUpward, contentDescription = "Move priority up")
                             }
                         }
                         if (idx < cfg.providers.lastIndex) {
                             IconButton(
-                                onClick = { vm.moveProvider(idx, 1) },
+                                onClick = {
+                                    vm.moveProvider(idx, 1)
+                                    onFeedback("Moved '${p.name}' down")
+                                },
                                 modifier = Modifier.minimumInteractiveComponentSize()
                             ) {
-                                Icon(Icons.Filled.ArrowDownward, contentDescription = "Move priority down")
+                                Icon(Icons.Outlined.ArrowDownward, contentDescription = "Move priority down")
                             }
                         }
                         IconButton(
-                            onClick = { vm.deleteProvider(idx) },
+                            onClick = {
+                                vm.deleteProvider(idx)
+                                onFeedback("Removed provider '${p.name}'")
+                            },
                             modifier = Modifier.minimumInteractiveComponentSize()
                         ) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete provider", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete provider", tint = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                 }
@@ -395,10 +461,16 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { confirmReset = false },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Reset Providers?") },
             text = { Text("This clears custom provider profiles saved on this device and restores Build Secrets defaults.") },
             confirmButton = {
-                Button(onClick = { vm.resetProvidersToDefaults(); confirmReset = false }) { Text("Reset") }
+                CleanPrimaryButton(onClick = {
+                    vm.resetProvidersToDefaults()
+                    confirmReset = false
+                    onFeedback("Restored default providers")
+                }) { Text("Reset") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
@@ -409,10 +481,14 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
     if (editorOpen) {
         ProviderEditorDialog(
             initial = editingInitial,
+            testing = testing,
+            testResult = testResult,
+            onTest = { draft -> vm.testProviderConnection(draft) },
             onDismiss = { editorOpen = false },
             onSave = { profile ->
                 vm.upsertProvider(profile, editingIndex)
                 editorOpen = false
+                onFeedback("Saved provider '${profile.name}'")
             }
         )
     }
@@ -422,6 +498,9 @@ private fun ProvidersSettingsPane(vm: BorerViewModel) {
 @Composable
 private fun ProviderEditorDialog(
     initial: ProviderProfile?,
+    testing: Boolean,
+    testResult: String?,
+    onTest: (ProviderProfile) -> Unit,
     onDismiss: () -> Unit,
     onSave: (ProviderProfile) -> Unit
 ) {
@@ -444,52 +523,99 @@ private fun ProviderEditorDialog(
             initial?.extraHeaders?.entries?.joinToString("\n") { "${it.key}: ${it.value}" }.orEmpty()
         )
     }
+    var showValidation by remember { mutableStateOf(false) }
+
+    val trimmedUrl = baseUrl.trim()
+    val urlValid = trimmedUrl.startsWith("http://", ignoreCase = true) ||
+        trimmedUrl.startsWith("https://", ignoreCase = true)
+    val urlError = when {
+        trimmedUrl.isBlank() -> "Base URL is required"
+        !urlValid -> "Must start with http:// or https://"
+        trimmedUrl.removePrefix("https://").removePrefix("http://").isBlank() -> "Enter a valid host"
+        else -> null
+    }
+    val modelError = if (model.isBlank()) "Model ID is required" else null
+    val keyError = if (apiKey.isBlank()) "API key is required (use 'ollama' for local)" else null
+    val formValid = urlError == null && modelError == null && keyError == null
+
+    fun buildDraft(): ProviderProfile {
+        val parsedCtx = ctxWindow.trim().toIntOrNull() ?: 0
+        val parsedHeaders = headersRaw.lines()
+            .mapNotNull { line ->
+                val sep = line.indexOf(':')
+                if (sep <= 0) null
+                else line.substring(0, sep).trim() to line.substring(sep + 1).trim()
+            }.filter { it.first.isNotBlank() }.toMap()
+
+        return ProviderProfile(
+            id = name.trim().ifBlank { "provider" },
+            name = name.trim().ifBlank { "provider" },
+            baseUrl = trimmedUrl,
+            model = model.trim(),
+            apiKey = apiKey.trim(),
+            api = apiKind,
+            contextWindow = if (parsedCtx > 0) parsedCtx else 0,
+            contextSource = if (parsedCtx > 0) ContextSource.CUSTOM else ContextSource.FALLBACK,
+            maxOutputTokens = (maxOut.trim().toIntOrNull() ?: 8192).coerceIn(256, 131_072),
+            temperature = temp.trim().toDoubleOrNull(),
+            topP = topP.trim().toDoubleOrNull(),
+            reasoningEffort = reasoningEffort.takeIf { it.isNotBlank() },
+            parallelToolCalls = parallel,
+            extraHeaders = parsedHeaders
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
         title = { Text(if (initial == null || initial.apiKey.isBlank()) "Configure Provider" else "Edit Provider") },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
-                Text("Connection", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(
+                SectionHeader(title = "Connection")
+                CleanOutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Profile Name") },
+                    label = "Profile Name",
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth().testTag("provider_name_input")
                 )
-                OutlinedTextField(
+                CleanOutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it },
-                    label = { Text("Base URL (OpenAI-compatible /v1)") },
+                    label = "Base URL (OpenAI-compatible /v1)",
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
+                    isError = (showValidation || baseUrl.isNotBlank()) && urlError != null,
+                    supportingText = if ((showValidation || baseUrl.isNotBlank()) && urlError != null) urlError else null,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     modifier = Modifier.fillMaxWidth().testTag("provider_url_input")
                 )
-                OutlinedTextField(
+                CleanOutlinedTextField(
                     value = model,
                     onValueChange = { model = it },
-                    label = { Text("Model ID (e.g. gpt-5, deepseek-reasoner)") },
+                    label = "Model ID (e.g. gpt-5, deepseek-reasoner)",
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
+                    isError = showValidation && modelError != null,
+                    supportingText = if (showValidation && modelError != null) modelError else null,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     modifier = Modifier.fillMaxWidth().testTag("provider_model_input")
                 )
-                OutlinedTextField(
+                CleanOutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
-                    label = { Text("API Key") },
+                    label = "API Key",
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
+                    isError = showValidation && keyError != null,
+                    supportingText = if (showValidation && keyError != null) keyError else null,
                     visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         IconButton(onClick = { showKey = !showKey }) {
                             Icon(
-                                imageVector = if (showKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                imageVector = if (showKey) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
                                 contentDescription = "Toggle API key visibility"
                             )
                         }
@@ -497,62 +623,88 @@ private fun ProviderEditorDialog(
                     modifier = Modifier.fillMaxWidth().testTag("provider_key_input")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                Text("API & Token Limits", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    SegmentedButton(
-                        selected = apiKind == ApiKind.CHAT,
-                        onClick = { apiKind = ApiKind.CHAT },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
-                    ) { Text("Chat", maxLines = 1) }
-                    SegmentedButton(
-                        selected = apiKind == ApiKind.RESPONSES,
-                        onClick = { apiKind = ApiKind.RESPONSES },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
-                    ) { Text("Responses", maxLines = 1) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    CleanOutlinedButton(
+                        onClick = {
+                            showValidation = true
+                            if (formValid) onTest(buildDraft())
+                        },
+                        enabled = !testing,
+                        modifier = Modifier.testTag("provider_dialog_test_button")
+                    ) {
+                        if (testing) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Testing...")
+                        } else {
+                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Test Connection")
+                        }
+                    }
                 }
 
+                if (!testing && testResult != null) {
+                    val isOk = testResult.startsWith("OK")
+                    CleanStatusBadge(
+                        text = testResult,
+                        inverted = isOk,
+                        emphasizedBorder = !isOk
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                SectionHeader(title = "API & Token Limits")
+
+                CleanSegmentedControl(
+                    options = listOf(
+                        SegmentTab("Chat", "provider_api_chat"),
+                        SegmentTab("Responses", "provider_api_responses")
+                    ),
+                    selectedIndex = if (apiKind == ApiKind.CHAT) 0 else 1,
+                    onSelect = { idx -> apiKind = if (idx == 0) ApiKind.CHAT else ApiKind.RESPONSES }
+                )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = ctxWindow,
                         onValueChange = { ctxWindow = it },
-                        label = { Text("Context (0=auto)") },
+                        label = "Context (0=auto)",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = maxOut,
                         onValueChange = { maxOut = it },
-                        label = { Text("Max output") },
+                        label = "Max output",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
                     )
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                Text("Sampling & Reasoning", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SectionHeader(title = "Sampling & Reasoning")
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = temp,
                         onValueChange = { temp = it },
-                        label = { Text("Temp (opt)") },
+                        label = "Temp (opt)",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         modifier = Modifier.weight(1f)
                     )
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = topP,
                         onValueChange = { topP = it },
-                        label = { Text("Top P (opt)") },
+                        label = "Top P (opt)",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         modifier = Modifier.weight(1f)
                     )
@@ -563,10 +715,10 @@ private fun ProviderEditorDialog(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf("" to "Auto", "low" to "low", "medium" to "medium", "high" to "high").forEach { (eff, label) ->
-                        FilterChip(
+                        CleanFilterPill(
+                            label = label,
                             selected = reasoningEffort == eff,
-                            onClick = { reasoningEffort = eff },
-                            label = { Text(label) }
+                            onClick = { reasoningEffort = eff }
                         )
                     }
                 }
@@ -577,50 +729,26 @@ private fun ProviderEditorDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Parallel Tool Calls", style = MaterialTheme.typography.bodyMedium)
-                    Switch(checked = parallel, onCheckedChange = { parallel = it })
+                    CleanSwitch(checked = parallel, onCheckedChange = { parallel = it })
                 }
 
-                OutlinedTextField(
+                CleanOutlinedTextField(
                     value = headersRaw,
                     onValueChange = { headersRaw = it },
-                    label = { Text("Extra Headers (Key: Value per line)") },
+                    label = "Extra Headers (Key: Value per line)",
                     minLines = 2,
-                    shape = RoundedCornerShape(12.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
         },
         confirmButton = {
-            Button(
+            CleanPrimaryButton(
                 onClick = {
-                    val parsedCtx = ctxWindow.trim().toIntOrNull() ?: 0
-                    val parsedHeaders = headersRaw.lines()
-                        .mapNotNull { line ->
-                            val sep = line.indexOf(':')
-                            if (sep <= 0) null
-                            else line.substring(0, sep).trim() to line.substring(sep + 1).trim()
-                        }.filter { it.first.isNotBlank() }.toMap()
-
-                    onSave(
-                        ProviderProfile(
-                            id = name.trim().ifBlank { "provider" },
-                            name = name.trim().ifBlank { "provider" },
-                            baseUrl = baseUrl.trim(),
-                            model = model.trim(),
-                            apiKey = apiKey.trim(),
-                            api = apiKind,
-                            contextWindow = if (parsedCtx > 0) parsedCtx else 0,
-                            contextSource = if (parsedCtx > 0) ContextSource.CUSTOM else ContextSource.FALLBACK,
-                            maxOutputTokens = (maxOut.trim().toIntOrNull() ?: 8192).coerceIn(256, 131_072),
-                            temperature = temp.trim().toDoubleOrNull(),
-                            topP = topP.trim().toDoubleOrNull(),
-                            reasoningEffort = reasoningEffort.takeIf { it.isNotBlank() },
-                            parallelToolCalls = parallel,
-                            extraHeaders = parsedHeaders
-                        )
-                    )
+                    showValidation = true
+                    if (formValid) onSave(buildDraft())
                 },
-                enabled = baseUrl.isNotBlank() && model.isNotBlank() && apiKey.isNotBlank(),
+                enabled = formValid,
                 modifier = Modifier.testTag("provider_save_button")
             ) {
                 Text("Save")
@@ -634,13 +762,41 @@ private fun ProviderEditorDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RuntimeSettingsPane(vm: BorerViewModel) {
+private fun RuntimeSettingsPane(
+    vm: BorerViewModel,
+    onFeedback: (String) -> Unit
+) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val diag by vm.prootDiagnostics.collectAsStateWithLifecycle()
     val prootTestOut by vm.prootTestOutput.collectAsStateWithLifecycle()
     val prootTesting by vm.prootTesting.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var setupNotice by remember { mutableStateOf<String?>(null) }
+    var ignoringBatteryOpt by remember {
+        mutableStateOf(BackgroundKeepAliveController.isIgnoringBatteryOptimizations(context))
+    }
+    var notifGranted by remember {
+        mutableStateOf(BackgroundKeepAliveController.hasNotificationPermission(context))
+    }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                ignoringBatteryOpt = BackgroundKeepAliveController.isIgnoringBatteryOptimizations(context)
+                notifGranted = BackgroundKeepAliveController.hasNotificationPermission(context)
+                vm.refreshProotDiagnostics()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notifGranted = granted || BackgroundKeepAliveController.hasNotificationPermission(context)
+    }
 
     val termuxPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -652,45 +808,136 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
+            .testTag("runtime_settings_list")
     ) {
+        item {
+            SectionHeader(title = "Background Execution (8h+ Keep-Alive)")
+            GroupedListCard {
+                GroupedSwitchRow(
+                    title = "Foreground Run Guard",
+                    subtitle = "Keep active runs alive in background via persistent notification & WakeLock",
+                    checked = settings.backgroundKeepAlive,
+                    onCheckedChange = { enabled ->
+                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifGranted) {
+                            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        vm.updateSettings { it.copy(backgroundKeepAlive = enabled) }
+                    },
+                    testTag = "switch_background_keep_alive"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Persistent WakeLock (Termux mode)",
+                    subtitle = "Keep CPU & Wi-Fi awake continuously (8–9h+) even between turns",
+                    checked = settings.persistentWakeLock,
+                    onCheckedChange = { enabled ->
+                        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifGranted) {
+                            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        vm.setPersistentWakeLock(enabled)
+                    },
+                    testTag = "switch_persistent_wakelock"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 11.dp)
+                ) {
+                    Text(
+                        text = "Battery Optimization",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    CleanStatusBadge(
+                        text = if (ignoringBatteryOpt) "UNRESTRICTED" else "OPTIMIZED",
+                        inverted = ignoringBatteryOpt,
+                        emphasizedBorder = !ignoringBatteryOpt
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        CleanOutlinedButton(
+                            onClick = { BackgroundKeepAliveController.openBatteryOptimizationSettings(context) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("open_battery_settings_button")
+                        ) {
+                            Text(if (ignoringBatteryOpt) "Battery Settings" else "Allow Unrestricted", maxLines = 1)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notifGranted) {
+                            CleanOutlinedButton(
+                                onClick = { notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("grant_notifications_button")
+                            ) {
+                                Text("Notifications", maxLines = 1)
+                            }
+                        }
+                    }
+                    Text(
+                        text = "For 8–9h unattended background sessions, set Battery to Unrestricted in Android Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         item {
             SectionHeader(
                 title = "Execution Runtime",
                 action = {
                     IconButton(
-                        onClick = { vm.refreshProotDiagnostics() },
+                        onClick = {
+                            vm.refreshProotDiagnostics()
+                            onFeedback("Refreshed runtime diagnostics")
+                        },
                         modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh proot diagnostics", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh proot diagnostics", modifier = Modifier.size(18.dp))
                     }
                 }
             )
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                SegmentedButton(
-                    selected = settings.shellBackend == ShellBackend.ANDROID_SH,
-                    onClick = { vm.updateSettings { it.copy(shellBackend = ShellBackend.ANDROID_SH) } },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
-                    modifier = Modifier.testTag("shell_backend_android")
-                ) { Text("Android sh", maxLines = 1) }
-                SegmentedButton(
-                    selected = settings.shellBackend == ShellBackend.TERMUX_PROOT,
-                    onClick = {
-                        vm.updateSettings { it.copy(shellBackend = ShellBackend.TERMUX_PROOT) }
-                        if (diag.termuxInstalled && !diag.termuxPermissionGranted) {
-                            termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION)
+            CleanSegmentedControl(
+                options = listOf(
+                    SegmentTab("Android sh", "shell_backend_android"),
+                    SegmentTab("Termux Ubuntu", "shell_backend_termux"),
+                    SegmentTab("Direct proot", "shell_backend_direct")
+                ),
+                selectedIndex = when (settings.shellBackend) {
+                    ShellBackend.ANDROID_SH -> 0
+                    ShellBackend.TERMUX_PROOT -> 1
+                    ShellBackend.PROOT_DIRECT -> 2
+                },
+                onSelect = { idx ->
+                    when (idx) {
+                        0 -> vm.updateSettings { it.copy(shellBackend = ShellBackend.ANDROID_SH) }
+                        1 -> {
+                            vm.updateSettings { it.copy(shellBackend = ShellBackend.TERMUX_PROOT) }
+                            if (diag.termuxInstalled && !diag.termuxPermissionGranted) {
+                                termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION)
+                            }
                         }
-                    },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
-                    modifier = Modifier.testTag("shell_backend_termux")
-                ) { Text("Termux Ubuntu", maxLines = 1) }
-                SegmentedButton(
-                    selected = settings.shellBackend == ShellBackend.PROOT_DIRECT,
-                    onClick = { vm.updateSettings { it.copy(shellBackend = ShellBackend.PROOT_DIRECT) } },
-                    shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
-                    modifier = Modifier.testTag("shell_backend_direct")
-                ) { Text("Direct proot", maxLines = 1) }
-            }
+                        else -> vm.updateSettings { it.copy(shellBackend = ShellBackend.PROOT_DIRECT) }
+                    }
+                }
+            )
         }
 
         item {
@@ -701,26 +948,26 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
                 KeyValueStatRow(
                     label = "Termux app",
                     value = if (diag.termuxInstalled) "Installed" else "Not found",
-                    valueColor = if (diag.termuxInstalled) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                    valueColor = if (diag.termuxInstalled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 KeyValueStatRow(
                     label = "RUN_COMMAND",
                     value = if (diag.termuxPermissionGranted) "Granted" else "Not granted",
-                    valueColor = if (diag.termuxPermissionGranted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary
+                    valueColor = if (diag.termuxPermissionGranted) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (settings.shellBackend == ShellBackend.PROOT_DIRECT) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     KeyValueStatRow(
                         label = "proot binary",
                         value = diag.directProotPath ?: "Not found",
-                        valueColor = if (diag.directProotPath != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary
+                        valueColor = if (diag.directProotPath != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     KeyValueStatRow(
                         label = "Ubuntu rootfs",
                         value = diag.directRootfsPath ?: "Not found",
-                        valueColor = if (diag.directRootfsPath != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary
+                        valueColor = if (diag.directRootfsPath != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -731,12 +978,12 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
                 SectionHeader(title = "Ubuntu (proot-distro) Configuration")
                 HairlineCard {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
+                        CleanOutlinedTextField(
                             value = settings.prootDistro,
                             onValueChange = { v -> vm.updateSettings { it.copy(prootDistro = v) } },
-                            label = { Text("Distro name (default: ubuntu)") },
+                            label = "Distro name (default: ubuntu)",
                             singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -746,78 +993,75 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (!diag.termuxPermissionGranted) {
-                                    OutlinedButton(
-                                        onClick = { termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION) },
-                                        shape = RoundedCornerShape(20.dp),
-                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    CleanOutlinedButton(
+                                        onClick = { termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION) }
                                     ) {
                                         Text("Grant Permission")
                                     }
                                 }
-                                OutlinedButton(
+                                CleanOutlinedButton(
                                     onClick = {
                                         val err = vm.launchTermuxUbuntuSetup()
                                         setupNotice = err ?: "Opened Termux to install proot-distro ${settings.prootDistro} and enable external apps."
-                                    },
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                    }
                                 ) {
                                     Text("Install in Termux")
                                 }
-                                OutlinedButton(
+                                CleanOutlinedButton(
                                     onClick = {
                                         val cmd = UbuntuProotRuntime.setupScript(settings.prootDistro)
                                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                         cm.setPrimaryClip(ClipData.newPlainText("proot-distro setup", cmd))
                                         setupNotice = "Copied Termux setup command to clipboard."
-                                    },
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                        onFeedback("Copied setup command")
+                                    }
                                 ) {
-                                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Copy Cmd")
                                 }
-                                Button(
+                                CleanPrimaryButton(
                                     onClick = { vm.testProotUbuntu() },
                                     enabled = !prootTesting,
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier.minimumInteractiveComponentSize().testTag("test_proot_button")
+                                    modifier = Modifier.testTag("test_proot_button")
                                 ) {
                                     if (prootTesting) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary
+                                        )
                                     } else {
-                                        Icon(Icons.Filled.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Outlined.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(4.dp))
                                         Text("Test Ubuntu")
                                     }
                                 }
                             }
                         } else {
-                            OutlinedTextField(
+                            CleanOutlinedTextField(
                                 value = settings.prootBinaryPath,
                                 onValueChange = { v -> vm.updateSettings { it.copy(prootBinaryPath = v) } },
-                                label = { Text("proot binary path (optional override)") },
+                                label = "proot binary path (optional override)",
                                 singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            OutlinedTextField(
+                            CleanOutlinedTextField(
                                 value = settings.prootRootfsPath,
                                 onValueChange = { v -> vm.updateSettings { it.copy(prootRootfsPath = v) } },
-                                label = { Text("Ubuntu rootfs dir (optional override)") },
+                                label = "Ubuntu rootfs dir (optional override)",
                                 singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                                Button(
+                                CleanPrimaryButton(
                                     onClick = { vm.testProotUbuntu() },
                                     enabled = !prootTesting,
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier.minimumInteractiveComponentSize().testTag("test_proot_button")
+                                    modifier = Modifier.testTag("test_proot_button")
                                 ) {
-                                    Icon(Icons.Filled.PlayArrow, contentDescription = "Test direct proot", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = "Test direct proot", modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
                                     Text(if (prootTesting) "Testing..." else "Test Direct proot")
                                 }
@@ -825,7 +1069,7 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
                         }
 
                         setupNotice?.let { msg ->
-                            Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                            Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                         }
                         prootTestOut?.let { out ->
                             SelectionContainer {
@@ -858,7 +1102,10 @@ private fun RuntimeSettingsPane(vm: BorerViewModel) {
 }
 
 @Composable
-private fun AgentSettingsPane(vm: BorerViewModel) {
+private fun AgentSettingsPane(
+    vm: BorerViewModel,
+    onFeedback: (String) -> Unit
+) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     var customInstr by remember(settings.customInstructions) { mutableStateOf(settings.customInstructions) }
     var instrSaved by remember { mutableStateOf(false) }
@@ -874,7 +1121,9 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             SectionHeader(title = "Behavior")
@@ -965,18 +1214,17 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
         item {
             SectionHeader(title = "Extra System Instructions")
             HairlineCard {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         "Appended after core borer instructions for every session.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = customInstr,
                         onValueChange = { customInstr = it },
-                        label = { Text("Optional operator rules") },
+                        label = "Optional operator rules",
                         minLines = 3,
-                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(
@@ -985,12 +1233,8 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         if (instrSaved) {
-                            Text(
-                                text = "Saved",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(end = 10.dp)
-                            )
+                            CleanStatusBadge(text = "Saved", inverted = true)
+                            Spacer(Modifier.width(10.dp))
                         }
                         if (customInstr.isNotBlank()) {
                             TextButton(
@@ -998,19 +1242,19 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
                                     customInstr = ""
                                     vm.updateSettings { it.copy(customInstructions = "") }
                                     instrSaved = true
+                                    onFeedback("Cleared custom instructions")
                                 }
                             ) {
                                 Text("Clear")
                             }
                             Spacer(Modifier.width(6.dp))
                         }
-                        Button(
+                        CleanPrimaryButton(
                             onClick = {
                                 vm.updateSettings { it.copy(customInstructions = customInstr.trim()) }
                                 instrSaved = true
-                            },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.minimumInteractiveComponentSize()
+                                onFeedback("Saved instructions")
+                            }
                         ) {
                             Text("Save Instructions")
                         }
@@ -1035,10 +1279,16 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { confirmResetAll = false },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Reset Harness Settings?") },
             text = { Text("Restore compaction thresholds, evidence budget, shell backend, and custom instructions to defaults?") },
             confirmButton = {
-                Button(onClick = { vm.resetAllSettingsToDefaults(); confirmResetAll = false }) { Text("Reset") }
+                CleanPrimaryButton(onClick = {
+                    vm.resetAllSettingsToDefaults()
+                    confirmResetAll = false
+                    onFeedback("Restored default settings")
+                }) { Text("Reset") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmResetAll = false }) { Text("Cancel") }
@@ -1048,7 +1298,10 @@ private fun AgentSettingsPane(vm: BorerViewModel) {
 }
 
 @Composable
-private fun AlertsSettingsPane(vm: BorerViewModel) {
+private fun AlertsSettingsPane(
+    vm: BorerViewModel,
+    onFeedback: (String) -> Unit
+) {
     val cfg by vm.config.collectAsStateWithLifecycle()
     val notifyTestResult by vm.notifyTestResult.collectAsStateWithLifecycle()
 
@@ -1079,12 +1332,15 @@ private fun AlertsSettingsPane(vm: BorerViewModel) {
             )
         )
         savedBadge = true
+        onFeedback("Saved notification settings")
     }
 
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             SectionHeader(title = "Webhook Destinations")
@@ -1096,48 +1352,47 @@ private fun AlertsSettingsPane(vm: BorerViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = webhookUrl,
                         onValueChange = { webhookUrl = it },
-                        label = { Text("Generic Webhook URL") },
+                        label = "Generic Webhook URL",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = discordUrl,
                         onValueChange = { discordUrl = it },
-                        label = { Text("Discord Webhook URL") },
+                        label = "Discord Webhook URL",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = telegramToken,
                         onValueChange = { telegramToken = it },
-                        label = { Text("Telegram Bot Token") },
+                        label = "Telegram Bot Token",
                         singleLine = true,
                         visualTransformation = if (showTgToken) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { showTgToken = !showTgToken }) {
                                 Icon(
-                                    imageVector = if (showTgToken) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    imageVector = if (showTgToken) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
                                     contentDescription = "Toggle token visibility"
                                 )
                             }
                         },
-                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    OutlinedTextField(
+                    CleanOutlinedTextField(
                         value = telegramChatId,
                         onValueChange = { telegramChatId = it },
-                        label = { Text("Telegram Chat ID") },
+                        label = "Telegram Chat ID",
                         singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -1163,27 +1418,25 @@ private fun AlertsSettingsPane(vm: BorerViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Button(
+                        CleanPrimaryButton(
                             onClick = { saveCurrent() },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.weight(1f).minimumInteractiveComponentSize()
+                            modifier = Modifier.weight(1f)
                         ) {
                             Text(if (savedBadge) "Saved" else "Save")
                         }
-                        OutlinedButton(
+                        CleanOutlinedButton(
                             onClick = {
                                 saveCurrent()
                                 vm.testNotification()
                             },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.weight(1f).minimumInteractiveComponentSize()
+                            modifier = Modifier.weight(1f)
                         ) {
                             Text("Send Test Alert")
                         }
                     }
 
                     notifyTestResult?.let { res ->
-                        Text(res, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                        Text(res, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -1205,10 +1458,16 @@ private fun AlertsSettingsPane(vm: BorerViewModel) {
         AlertDialog(
             onDismissRequest = { confirmReset = false },
             containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Reset Notifications?") },
             text = { Text("Clear custom webhooks and restore Build Secrets notification defaults?") },
             confirmButton = {
-                Button(onClick = { vm.resetNotifyToDefaults(); confirmReset = false }) { Text("Reset") }
+                CleanPrimaryButton(onClick = {
+                    vm.resetNotifyToDefaults()
+                    confirmReset = false
+                    onFeedback("Restored default notifications")
+                }) { Text("Reset") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmReset = false }) { Text("Cancel") }

@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,36 +14,37 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CheckBox
+import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.NoteAlt
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -56,6 +58,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -67,6 +71,7 @@ import com.example.data.NoteEntity
 import com.example.data.NoteKind
 import com.example.tools.Cvss31Calculator
 import com.example.ui.BorerViewModel
+import com.example.ui.theme.JetBrainsMonoFontFamily
 import java.io.File
 
 @Composable
@@ -99,10 +104,12 @@ fun IntelScreen(
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
                     modifier = Modifier.testTag("intel_add_fab")
                 ) {
                     Icon(
-                        Icons.Filled.Add,
+                        Icons.Outlined.Add,
                         contentDescription = if (tabIdx == 0) "Add finding" else "Add note"
                     )
                 }
@@ -114,6 +121,7 @@ fun IntelScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .imePadding()
         ) {
             CleanScreenTopBar(
                 title = "Intel & Reports",
@@ -129,7 +137,7 @@ fun IntelScreen(
                 ),
                 selectedIndex = tabIdx,
                 onSelect = { tabIdx = it },
-                modifier = Modifier.widthIn(max = 760.dp)
+                modifier = Modifier.widthIn(max = BorerTokens.ScreenMaxWidth)
             )
 
             when (tabIdx) {
@@ -187,13 +195,28 @@ fun IntelScreen(
         AlertDialog(
             onDismissRequest = { selectedFindingReport = null },
             containerColor = MaterialTheme.colorScheme.surface,
-            title = { Text(finding.title) },
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+            title = {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = finding.title,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    CopyActionChip(label = "finding report", textToCopy = markdown)
+                }
+            },
             text = {
-                Text(
-                    text = markdown,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                )
+                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    MarkdownProse(text = markdown)
+                }
             },
             confirmButton = {
                 TextButton(onClick = { selectedFindingReport = null }) { Text("Close") }
@@ -231,15 +254,16 @@ private fun FindingsPane(
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 88.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         items(findings, key = { it.id }) { f ->
-            val sevColor = when (f.severity.lowercase()) {
-                "critical", "high" -> MaterialTheme.colorScheme.error
-                "medium" -> MaterialTheme.colorScheme.tertiary
-                else -> MaterialTheme.colorScheme.secondary
-            }
+            val sevLower = f.severity.lowercase()
+            val isHigh = sevLower == "critical" || sevLower == "high"
+            val isMed = sevLower == "medium"
             HairlineCard(
+                highlighted = isHigh,
                 onClick = { onOpenReport(f) },
                 modifier = Modifier.testTag("finding_card_${f.id}")
             ) {
@@ -248,18 +272,25 @@ private fun FindingsPane(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Surface(
-                        color = sevColor.copy(alpha = 0.14f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
+                    CleanStatusBadge(
+                        text = "${f.severity.uppercase()}${f.cvss?.let { " · CVSS ${"%.1f".format(it)}" } ?: ""}",
+                        inverted = isHigh,
+                        emphasizedBorder = isMed
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "${f.severity.uppercase()}${f.cvss?.let { " · CVSS ${"%.1f".format(it)}" } ?: ""}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = sevColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            text = f.status,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = "Open finding report",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
-                    Text(f.status, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(f.title, style = MaterialTheme.typography.titleMedium)
@@ -292,6 +323,7 @@ private fun NotesAndTodoPane(
 
     val todoNote = notes.firstOrNull { it.kind == NoteKind.TODO.wire }
     val todos = remember(todoNote?.body) { BorerViewModel.parseTodos(todoNote?.body) }
+    val doneTodos = remember(todos) { todos.count { it.first } }
     val filteredNotes = remember(notes, searchQuery, selectedKind) {
         notes.filter { n ->
             n.kind != NoteKind.TODO.wire &&
@@ -305,43 +337,55 @@ private fun NotesAndTodoPane(
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 88.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             HairlineCard {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Run Todo Checklist", style = MaterialTheme.typography.titleMedium)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Run Todo Checklist", style = MaterialTheme.typography.titleMedium)
+                            if (todos.isNotEmpty()) {
+                                CleanStatusBadge(text = "$doneTodos/${todos.size}")
+                            }
+                        }
                         if (todos.isNotEmpty()) {
                             TextButton(onClick = onClearTodos) { Text("Clear") }
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
+                        CleanOutlinedTextField(
                             value = newTodoText,
                             onValueChange = { newTodoText = it },
-                            placeholder = { Text("Add hunting task...") },
+                            placeholder = "Add hunting task...",
                             singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f).testTag("todo_input")
                         )
                         Spacer(Modifier.width(8.dp))
-                        Button(
+                        CleanPrimaryButton(
                             onClick = {
                                 if (newTodoText.isNotBlank()) {
                                     onAddTodo(newTodoText)
                                     newTodoText = ""
                                 }
                             },
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier.minimumInteractiveComponentSize().testTag("todo_add_button")
+                            enabled = newTodoText.isNotBlank(),
+                            modifier = Modifier.testTag("todo_add_button")
                         ) {
                             Text("Add")
                         }
+                    }
+                    if (todos.isNotEmpty()) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     }
                     todos.forEachIndexed { idx, (done, text) ->
                         Row(
@@ -350,15 +394,22 @@ private fun NotesAndTodoPane(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable { onToggleTodo(idx) }
-                                .padding(vertical = 6.dp, horizontal = 4.dp)
+                                .padding(vertical = 7.dp, horizontal = 4.dp)
                         ) {
                             Icon(
-                                imageVector = if (done) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                                imageVector = if (done) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
                                 contentDescription = "Toggle todo",
-                                tint = if (done) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                                tint = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text(text, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = text,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None
+                                ),
+                                color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
                 }
@@ -366,20 +417,19 @@ private fun NotesAndTodoPane(
         }
 
         item {
-            OutlinedTextField(
+            CleanOutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search notes") },
+                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = "Search notes") },
                 trailingIcon = if (searchQuery.isNotEmpty()) {
                     {
                         IconButton(onClick = { searchQuery = "" }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                            Icon(Icons.Rounded.Close, contentDescription = "Clear search")
                         }
                     }
                 } else null,
-                placeholder = { Text("Search notes...") },
+                placeholder = "Search notes...",
                 singleLine = true,
-                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth().testTag("notes_search_input")
             )
             Spacer(Modifier.height(8.dp))
@@ -387,16 +437,16 @@ private fun NotesAndTodoPane(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
-                FilterChip(
+                CleanFilterPill(
+                    label = "all",
                     selected = selectedKind == null,
-                    onClick = { selectedKind = null },
-                    label = { Text("all") }
+                    onClick = { selectedKind = null }
                 )
                 NoteKind.entries.filter { it != NoteKind.TODO }.forEach { kind ->
-                    FilterChip(
+                    CleanFilterPill(
+                        label = kind.wire,
                         selected = selectedKind == kind,
-                        onClick = { selectedKind = if (selectedKind == kind) null else kind },
-                        label = { Text(kind.wire) }
+                        onClick = { selectedKind = if (selectedKind == kind) null else kind }
                     )
                 }
             }
@@ -431,24 +481,19 @@ private fun NotesAndTodoPane(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "#${note.id} · ${note.kind}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
+                        CleanStatusBadge(text = "#${note.id} · ${note.kind}")
                         IconButton(
                             onClick = { onDeleteNote(note.id) },
                             modifier = Modifier.minimumInteractiveComponentSize()
                         ) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete note", tint = MaterialTheme.colorScheme.error)
+                            Icon(
+                                Icons.Outlined.Delete,
+                                contentDescription = "Delete note",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
+                    Spacer(Modifier.height(4.dp))
                     Text(note.key, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -476,19 +521,25 @@ private fun AuditTrailPane(
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         item {
             GroupedListCard {
                 KeyValueStatRow(
                     label = "Mode",
                     value = "Open · $requestsAllowed req logged",
-                    valueColor = MaterialTheme.colorScheme.secondary
+                    valueColor = MaterialTheme.colorScheme.onSurface
                 )
                 if (hostsReached.isNotEmpty()) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                        Text("Hosts Reached", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "Hosts Reached",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(Modifier.height(4.dp))
                         Text(
                             text = hostsReached.entries.joinToString(" · ") { "${it.key} (${it.value})" },
@@ -498,12 +549,15 @@ private fun AuditTrailPane(
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    FilterChip(selected = !showEvents, onClick = { showEvents = false }, label = { Text("http.jsonl (${httpLogs.size})") })
-                    FilterChip(selected = showEvents, onClick = { showEvents = true }, label = { Text("events.jsonl (${events.size})") })
+                Box(modifier = Modifier.padding(12.dp)) {
+                    CleanSegmentedControl(
+                        options = listOf(
+                            SegmentTab("http.jsonl", "audit_tab_http", count = httpLogs.size),
+                            SegmentTab("events.jsonl", "audit_tab_events", count = events.size)
+                        ),
+                        selectedIndex = if (!showEvents) 0 else 1,
+                        onSelect = { showEvents = it == 1 }
+                    )
                 }
             }
         }
@@ -521,34 +575,29 @@ private fun AuditTrailPane(
                 }
             } else {
                 items(httpLogs.reversed()) { req ->
-                    val statusColor = when {
-                        req.status in 200..299 -> MaterialTheme.colorScheme.secondary
-                        req.status in 300..399 -> MaterialTheme.colorScheme.primary
-                        req.status >= 400 || req.status == 0 -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+                    val is2xx = req.status in 200..299
+                    val isErr = req.status >= 400 || req.status == 0
                     HairlineCard {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Surface(
-                                color = statusColor.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = if (req.status > 0) "${req.status}" else "ERR",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = statusColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
+                            CleanStatusBadge(
+                                text = if (req.status > 0) "${req.status}" else "ERR",
+                                inverted = is2xx,
+                                emphasizedBorder = isErr
+                            )
                             Spacer(Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("${req.method} ${req.url}", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Spacer(Modifier.height(2.dp))
                                 Text(
-                                    "${req.bytes}b · ${req.ms}ms",
+                                    text = "${req.method} ${req.url}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = "${req.bytes}b · ${req.ms}ms",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -571,7 +620,14 @@ private fun AuditTrailPane(
             } else {
                 items(events.reversed(), key = { it.seq }) { ev ->
                     HairlineCard {
-                        Text("#${ev.seq} ${ev.kind}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            text = "#${ev.seq} ${ev.kind}",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                         if (ev.data.isNotEmpty()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
@@ -606,19 +662,31 @@ private fun ArtifactsPane(
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.widthIn(max = 760.dp).fillMaxSize()
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
     ) {
         items(artifacts, key = { it.id }) { art ->
             HairlineCard(onClick = { onOpen(art) }) {
                 Row(
                     horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(art.id, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
-                    Text("${art.bytes}b · ${art.lines} lines · ${art.kind}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    CleanStatusBadge(text = art.id)
+                    Text(
+                        text = "${art.bytes}b · ${art.lines} lines · ${art.kind}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(art.label, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = art.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -640,24 +708,32 @@ private fun NewFindingDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
         title = { Text("New Finding + CVSS 3.1") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = asset, onValueChange = { asset = it }, label = { Text("Asset / Endpoint") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = vector, onValueChange = { vector = it }, label = { Text("CVSS 3.1 Vector") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text(
-                    text = preview?.let { "Calculated: ${"%.1f".format(it.base)} (${it.severity.uppercase()})" } ?: "Invalid CVSS 3.1 vector",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (preview != null) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
+                CleanOutlinedTextField(value = title, onValueChange = { title = it }, label = "Title", singleLine = true, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = asset, onValueChange = { asset = it }, label = "Asset / Endpoint", singleLine = true, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(
+                    value = vector,
+                    onValueChange = { vector = it },
+                    label = "CVSS 3.1 Vector",
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(value = summary, onValueChange = { summary = it }, label = { Text("Summary") }, minLines = 2, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = impact, onValueChange = { impact = it }, label = { Text("Impact") }, minLines = 2, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = remediation, onValueChange = { remediation = it }, label = { Text("Remediation") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                CleanStatusBadge(
+                    text = preview?.let { "CVSS ${"%.1f".format(it.base)} (${it.severity.uppercase()})" } ?: "Invalid CVSS 3.1 vector",
+                    inverted = preview != null
+                )
+                CleanOutlinedTextField(value = summary, onValueChange = { summary = it }, label = "Summary", minLines = 2, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = impact, onValueChange = { impact = it }, label = "Impact", minLines = 2, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = remediation, onValueChange = { remediation = it }, label = "Remediation", minLines = 2, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
-            Button(
+            CleanPrimaryButton(
                 onClick = { onSave(title, asset, vector, summary, impact, remediation) },
                 enabled = title.isNotBlank()
             ) { Text("Save Report") }
@@ -679,21 +755,23 @@ private fun NewNoteDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
         title = { Text("New Note") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     NoteKind.entries.filter { it != NoteKind.TODO }.forEach { k ->
-                        FilterChip(selected = kind == k, onClick = { kind = k }, label = { Text(k.wire) })
+                        CleanFilterPill(label = k.wire, selected = kind == k, onClick = { kind = k })
                     }
                 }
-                OutlinedTextField(value = key, onValueChange = { key = it }, label = { Text("Key (e.g. /api/users?id)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("Body") }, minLines = 3, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("Tags (comma separated)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = key, onValueChange = { key = it }, label = "Key (e.g. /api/users?id)", singleLine = true, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = body, onValueChange = { body = it }, label = "Body", minLines = 3, modifier = Modifier.fillMaxWidth())
+                CleanOutlinedTextField(value = tags, onValueChange = { tags = it }, label = "Tags (comma separated)", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
-            Button(
+            CleanPrimaryButton(
                 onClick = {
                     val tagList = tags.split(',').map { it.trim() }.filter { it.isNotBlank() }
                     onSave(kind, key, body, tagList)
@@ -721,28 +799,48 @@ private fun ArtifactRecallDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
-        title = { Text("Recall ${artifact.id}") },
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+        title = {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Recall ${artifact.id}",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                CopyActionChip(label = "artifact content", textToCopy = content)
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
+                CleanOutlinedTextField(
                     value = pattern,
                     onValueChange = { pattern = it },
-                    label = { Text("Regex grep (optional)") },
+                    label = "Regex grep (optional)",
                     singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text(
-                    text = content,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .height(280.dp)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.background)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
-                        .verticalScroll(rememberScrollState())
-                        .padding(10.dp)
-                )
+                SelectionContainer {
+                    Text(
+                        text = content,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .height(280.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.background)
+                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                            .verticalScroll(rememberScrollState())
+                            .padding(10.dp)
+                    )
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }

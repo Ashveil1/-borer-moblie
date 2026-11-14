@@ -63,7 +63,9 @@ data class BorerSettings(
     val shellBackend: ShellBackend = ShellBackend.ANDROID_SH,
     val prootDistro: String = "ubuntu",
     val prootBinaryPath: String = "",
-    val prootRootfsPath: String = ""
+    val prootRootfsPath: String = "",
+    val backgroundKeepAlive: Boolean = true,
+    val persistentWakeLock: Boolean = false
 )
 
 @Serializable

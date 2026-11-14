@@ -298,7 +298,7 @@ class RunStore(
         body: String,
         tags: List<String> = emptyList(),
         links: List<Long> = emptyList()
-    ): NoteModel {
+    ): NoteModel = synchronized(db) {
         val now = Instant.now().toString()
         val tagsJson = json.encodeToString(tags)
         val linksJson = json.encodeToString(links)
@@ -320,7 +320,19 @@ class RunStore(
                 )
             )
         }
-        return getNote(id)!!
+        getNote(id)
+            ?: db.noteDao().findByKindKeySync(runId, kind.wire, key)?.toModel()
+            ?: NoteModel(
+                id = id,
+                runId = runId,
+                kind = kind,
+                key = key,
+                body = body,
+                tags = tags,
+                links = links,
+                created = existing?.createdAt ?: now,
+                updated = now
+            )
     }
 
     fun getNote(id: Long): NoteModel? = db.noteDao().getNoteSync(id)?.toModel()
