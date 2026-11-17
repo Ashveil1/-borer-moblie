@@ -179,8 +179,13 @@ class ChildProxyServer(
             return
         }
 
+        val transferEnc = headers["transfer-encoding"].orEmpty().lowercase(Locale.US)
         val contentLen = headers["content-length"]?.toIntOrNull() ?: 0
-        val reqBody = if (contentLen > 0) readExactBytes(clientIn, contentLen) else ByteArray(0)
+        val reqBody = when {
+            transferEnc.contains("chunked") -> readChunkedBody(clientIn)
+            contentLen > 0 -> readExactBytes(clientIn, contentLen)
+            else -> ByteArray(0)
+        }
 
         val connectHost = decision.pinned.firstOrNull() ?: host
         try {
@@ -192,8 +197,15 @@ class ChildProxyServer(
                 val rOut = remote.getOutputStream()
                 val headerBlock = buildString {
                     append("$method $path $httpVersion\r\n")
-                    headers.filterKeys { it != "proxy-connection" && it != "connection" && it != "keep-alive" }
-                        .forEach { (k, v) -> append("$k: $v\r\n") }
+                    headers.filterKeys {
+                        it != "proxy-connection" &&
+                            it != "connection" &&
+                            it != "keep-alive" &&
+                            !(transferEnc.contains("chunked") && it == "transfer-encoding")
+                    }.forEach { (k, v) -> append("$k: $v\r\n") }
+                    if (transferEnc.contains("chunked") && reqBody.isNotEmpty()) {
+                        append("content-length: ${reqBody.size}\r\n")
+                    }
                     append("connection: close\r\n\r\n")
                 }
                 rOut.write(headerBlock.toByteArray(Charsets.ISO_8859_1))
@@ -217,8 +229,17 @@ class ChildProxyServer(
                     }
                 }
                 clientOut.write(rawHeaderOut.toByteArray())
-                val respBytes = rIn.readBytes()
-                clientOut.write(respBytes)
+                clientOut.flush()
+                val buf = ByteArray(8192)
+                var totalRespBytes = 0L
+                while (true) {
+                    val n = rIn.read(buf)
+                    if (n < 0) break
+                    if (n > 0) {
+                        clientOut.write(buf, 0, n)
+                        totalRespBytes += n
+                    }
+                }
                 clientOut.flush()
 
                 gate.recordSuccess(host)
@@ -228,7 +249,7 @@ class ChildProxyServer(
                     requestHeaders = headers,
                     status = statusCode,
                     responseHeaders = respHeaders,
-                    bytes = respBytes.size,
+                    bytes = totalRespBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                     ms = System.currentTimeMillis() - started,
                     aggression = decision.aggression.wire
                 )
@@ -267,6 +288,30 @@ class ChildProxyServer(
             offset += read
         }
         return if (offset == capped) buf else buf.copyOf(offset)
+    }
+
+    private fun readChunkedBody(input: InputStream): ByteArray {
+        val maxCap = 16 * 1024 * 1024
+        val out = ByteArrayOutputStream()
+        while (true) {
+            val sizeLine = readLineCrlf(input) ?: break
+            val hex = sizeLine.substringBefore(';').trim()
+            val chunkSize = hex.toIntOrNull(16) ?: break
+            if (chunkSize <= 0) {
+                while (true) {
+                    val trailer = readLineCrlf(input) ?: break
+                    if (trailer.isEmpty()) break
+                }
+                break
+            }
+            val chunk = readExactBytes(input, chunkSize)
+            val remainingCap = maxCap - out.size()
+            if (remainingCap > 0 && chunk.isNotEmpty()) {
+                out.write(chunk, 0, minOf(remainingCap, chunk.size))
+            }
+            readLineCrlf(input)
+        }
+        return out.toByteArray()
     }
 
     private fun splitAuthority(authority: String): Pair<String, Int?> {

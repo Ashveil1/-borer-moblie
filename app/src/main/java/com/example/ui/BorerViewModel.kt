@@ -3,17 +3,20 @@ package com.example.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.example.BorerApplication
+import com.example.data.AgentProfile
 import com.example.data.AppConfig
 import com.example.data.ArtifactEntity
 import com.example.data.BorerSettings
 import com.example.data.EventLog
 import com.example.data.EventRecord
 import com.example.data.ExperienceEntity
+import com.example.data.FileDiffItem
 import com.example.data.FindingEntity
 import com.example.data.HttpLogRecord
 import com.example.data.JobEntity
 import com.example.data.LearningMemory
 import com.example.data.LearningStats
+import com.example.data.McpServerConfig
 import com.example.data.NoteEntity
 import com.example.data.NoteKind
 import com.example.data.NotifyConfig
@@ -21,7 +24,9 @@ import com.example.data.ProviderProfile
 import com.example.data.SessionEntity
 import com.example.data.TargetHistoryEntity
 import com.example.data.TechniqueEntity
+import com.example.mcp.McpServerState
 import com.example.provider.ChatMessage
+import com.example.provider.ModelCatalogEntry
 import com.example.provider.Usage
 import com.example.runtime.ProotDiagnostics
 import com.example.session.BorerSessionController
@@ -45,10 +50,39 @@ sealed interface TranscriptEntry {
         val ms: Long = 0,
         val preview: String = ""
     ) : TranscriptEntry
+    data class PlanProposal(
+        override val id: String,
+        val title: String,
+        val summary: String,
+        val steps: List<String>,
+        val approved: Boolean = false
+    ) : TranscriptEntry
     data class Info(override val id: String, val text: String, val isWarn: Boolean = false) : TranscriptEntry
 }
 
-enum class RunMode { CHAT, AUTONOMOUS }
+enum class RunMode { PLAN, CHAT, AUTONOMOUS }
+
+sealed interface ApprovalDecision {
+    data object AllowOnce : ApprovalDecision
+    data object AllowToolSession : ApprovalDecision
+    data object AllowAllSession : ApprovalDecision
+    data class Deny(val reason: String = "Denied by operator") : ApprovalDecision
+}
+
+data class PendingToolApproval(
+    val callId: String,
+    val toolName: String,
+    val summary: String,
+    val argumentsPreview: String,
+    val riskReason: String
+)
+
+data class MentionSuggestion(
+    val token: String,
+    val label: String,
+    val detail: String,
+    val kind: String
+)
 
 enum class HuntItemStatus { PENDING, RUNNING, DONE, FAILED }
 
@@ -64,6 +98,7 @@ data class ConsoleUiState(
     val runId: String = "",
     val mode: RunMode = RunMode.CHAT,
     val busy: Boolean = false,
+    val isStreaming: Boolean = false,
     val stopRequested: Boolean = false,
     val turn: Int = 0,
     val contextTokens: Int = 0,
@@ -77,7 +112,13 @@ data class ConsoleUiState(
     val hostsReached: Map<String, Int> = emptyMap(),
     val requestsAllowed: Int = 0,
     val requestsDenied: Int = 0,
-    val learningStats: LearningStats = LearningStats(0, 0, 0, 0)
+    val learningStats: LearningStats = LearningStats(0, 0, 0, 0),
+    val pendingApproval: PendingToolApproval? = null,
+    val checkpointCount: Int = 0,
+    val changedFilesCount: Int = 0,
+    val subagentActiveLabel: String? = null,
+    val agentsMdLoaded: Boolean = false,
+    val agentProfile: AgentProfile = AgentProfile.GENERAL
 )
 
 class BorerViewModel(application: Application) : AndroidViewModel(application) {
@@ -96,6 +137,9 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
     val providerTestResult: StateFlow<String?> get() = controller.providerTestResult
     val providerTesting: StateFlow<Boolean> get() = controller.providerTesting
     val notifyTestResult: StateFlow<String?> get() = controller.notifyTestResult
+    val mcpStates: StateFlow<List<McpServerState>> get() = controller.mcpStates
+    val mcpInstallingId: StateFlow<String?> get() = controller.mcpInstallingId
+    val mcpInstallLog: StateFlow<String?> get() = controller.mcpInstallLog
     val console: StateFlow<ConsoleUiState> get() = controller.console
     val activeRunId: StateFlow<String> get() = controller.activeRunId
     val events: StateFlow<List<EventRecord>> get() = controller.events
@@ -115,6 +159,7 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
     val allTargets: StateFlow<List<TargetHistoryEntity>> get() = controller.allTargets
 
     fun setRunMode(mode: RunMode) = controller.setRunMode(mode)
+    fun setAgentProfile(profile: AgentProfile) = controller.setAgentProfile(profile)
     fun setPersistentWakeLock(enabled: Boolean) = controller.setPersistentWakeLock(enabled)
 
     fun startNewSession(
@@ -127,6 +172,15 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
     fun requestStop() = controller.requestStop()
     fun forceCancelTurn() = controller.forceCancelTurn()
     fun toggleReasoningCollapsed(entryId: String) = controller.toggleReasoningCollapsed(entryId)
+    fun resolveToolApproval(decision: ApprovalDecision) = controller.resolveToolApproval(decision)
+    fun approvePlan(entryId: String, targetMode: RunMode) = controller.approvePlan(entryId, targetMode)
+    fun compactContextNow() = controller.compactContextNow()
+    fun undoLastTurn() = controller.undoLastTurn()
+    suspend fun getSessionDiffs(): List<FileDiffItem> = controller.getSessionDiffs()
+    suspend fun getMentionSuggestions(query: String): List<MentionSuggestion> = controller.getMentionSuggestions(query)
+    suspend fun buildSessionMarkdownExport(sessionId: String? = null): String = controller.buildSessionMarkdownExport(sessionId)
+    suspend fun buildSessionJsonExport(sessionId: String? = null): String = controller.buildSessionJsonExport(sessionId)
+
     fun resumeSession(sessionEntity: SessionEntity): Boolean = controller.resumeSession(sessionEntity)
     fun forkSession(sessionEntity: SessionEntity): Boolean = controller.forkSession(sessionEntity)
     fun archiveSession(id: String, archived: Boolean) = controller.archiveSession(id, archived)
@@ -168,6 +222,9 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
     fun saveCustomSkill(name: String, description: String, body: String) =
         controller.saveCustomSkill(name, description, body)
 
+    suspend fun loadAgentsMd(): String = controller.loadAgentsMd()
+    fun saveAgentsMd(content: String) = controller.saveAgentsMd(content)
+
     fun refreshProotDiagnostics() = controller.refreshProotDiagnostics()
     fun launchTermuxUbuntuSetup(): String? = controller.launchTermuxUbuntuSetup()
     fun testProotUbuntu() = controller.testProotUbuntu()
@@ -177,6 +234,8 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
     fun moveProvider(index: Int, delta: Int) = controller.moveProvider(index, delta)
     fun resetProvidersToDefaults() = controller.resetProvidersToDefaults()
     fun testProviderConnection(profile: ProviderProfile) = controller.testProviderConnection(profile)
+    suspend fun fetchProviderModels(profile: ProviderProfile): Result<List<ModelCatalogEntry>> =
+        controller.fetchProviderModels(profile)
     fun clearProviderTestResult() = controller.clearProviderTestResult()
 
     fun updateNotifyConfig(next: NotifyConfig) = controller.updateNotifyConfig(next)
@@ -185,6 +244,18 @@ class BorerViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSettings(transform: (BorerSettings) -> BorerSettings) = controller.updateSettings(transform)
     fun resetAllSettingsToDefaults() = controller.resetAllSettingsToDefaults()
+
+    fun upsertMcpServer(server: McpServerConfig) = controller.upsertMcpServer(server)
+    fun deleteMcpServer(serverId: String) = controller.deleteMcpServer(serverId)
+    fun toggleMcpServer(serverId: String, enabled: Boolean) = controller.toggleMcpServer(serverId, enabled)
+    fun connectMcpServer(serverId: String) = controller.connectMcpServer(serverId)
+    fun disconnectMcpServer(serverId: String) = controller.disconnectMcpServer(serverId)
+    fun refreshAllMcpServers() = controller.refreshAllMcpServers()
+    fun installWhsearchPreset() = controller.installWhsearchPreset()
+    fun installGitHubMcpServer(serverId: String) = controller.installGitHubMcpServer(serverId)
+    fun clearMcpInstallLog() = controller.clearMcpInstallLog()
+    fun importMcpServersJson(rawJson: String): Result<Int> = controller.importMcpServersJson(rawJson)
+    fun exportMcpServersJson(): String = controller.exportMcpServersJson()
 
     companion object {
         fun parseTodos(body: String?): List<Pair<Boolean, String>> = BorerSessionController.parseTodos(body)

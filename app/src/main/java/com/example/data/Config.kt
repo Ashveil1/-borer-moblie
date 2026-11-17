@@ -48,6 +48,103 @@ enum class ShellBackend(val wire: String, val label: String) {
 }
 
 @Serializable
+enum class ExecutionMode(val wire: String, val label: String) {
+    PLAN("plan", "Plan"),
+    SUPERVISED("chat", "Chat"),
+    AUTONOMOUS("auto", "Auto");
+
+    companion object {
+        fun fromWire(value: String?): ExecutionMode {
+            val normalized = value?.trim()?.lowercase().orEmpty()
+            return when (normalized) {
+                "plan" -> PLAN
+                "supervised", "ask", "chat" -> SUPERVISED
+                "auto", "autonomous" -> AUTONOMOUS
+                else -> SUPERVISED
+            }
+        }
+    }
+}
+
+@Serializable
+enum class AgentProfile(val wire: String, val label: String, val subtitle: String) {
+    GENERAL("general", "General", "Versatile assistant for Q&A, writing, coding, research & automation"),
+    CODING("coding", "Code", "Software engineering, file patching, builds, tests & Ubuntu shell"),
+    RESEARCH("research", "Research", "Web search, deep reading, synthesis & structured Markdown reports"),
+    SECURITY("security", "Security", "Authorized security assessment, probing & PoC verification");
+
+    companion object {
+        fun fromWire(value: String?): AgentProfile {
+            val normalized = value?.trim()?.lowercase().orEmpty()
+            return entries.firstOrNull { it.wire == normalized } ?: GENERAL
+        }
+    }
+}
+
+@Serializable
+enum class McpTransport(val wire: String, val label: String) {
+    AUTO("auto", "Auto (HTTP/SSE)"),
+    STREAMABLE_HTTP("http", "Streamable HTTP"),
+    SSE("sse", "HTTP + SSE"),
+    STDIO("stdio", "Stdio Process");
+
+    companion object {
+        fun fromWire(value: String?): McpTransport =
+            entries.firstOrNull { it.wire == value?.trim()?.lowercase() } ?: AUTO
+    }
+}
+
+@Serializable
+data class McpServerConfig(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = false,
+    val transport: McpTransport = McpTransport.AUTO,
+    val url: String = "",
+    val command: String = "",
+    val args: List<String> = emptyList(),
+    val env: Map<String, String> = emptyMap(),
+    val headers: Map<String, String> = emptyMap(),
+    val repoUrl: String = "",
+    val useForWebSearch: Boolean = false,
+    val timeoutMs: Long = 30_000L
+)
+
+fun defaultWhsearchMcpServer(): McpServerConfig = McpServerConfig(
+    id = "whsearch",
+    name = "whsearch (Ashveil1)",
+    enabled = false,
+    transport = McpTransport.STDIO,
+    url = "",
+    command = "sh",
+    args = listOf(
+        "-lc",
+        "BASE=\"\${HOME:-\$BORER_WORKDIR}\"; " +
+            "DIR=\"\$BASE/mcp-servers/whsearch\"; " +
+            "if command -v whsearch >/dev/null 2>&1; then exec whsearch; " +
+            "elif [ -x \"\$DIR/.venv/bin/whsearch\" ]; then exec \"\$DIR/.venv/bin/whsearch\"; " +
+            "elif [ -x \"\$DIR/.venv/bin/python\" ] && [ -f \"\$DIR/server.py\" ]; then exec \"\$DIR/.venv/bin/python\" \"\$DIR/server.py\"; " +
+            "elif [ -x \"\$DIR/.venv/bin/python\" ] && \"\$DIR/.venv/bin/python\" -c 'import whsearch' >/dev/null 2>&1; then exec \"\$DIR/.venv/bin/python\" -m whsearch; " +
+            "elif [ -f \"\$DIR/dist/index.js\" ]; then exec node \"\$DIR/dist/index.js\"; " +
+            "elif command -v uvx >/dev/null 2>&1; then exec uvx --from git+https://github.com/Ashveil1/whsearch whsearch; " +
+            "else echo 'whsearch MCP is not installed yet. Tap Install in Settings -> MCP.' >&2; exit 127; fi"
+    ),
+    repoUrl = "https://github.com/Ashveil1/whsearch",
+    useForWebSearch = true,
+    timeoutMs = 30_000L
+)
+
+@Serializable
+data class ToolsetConfig(
+    val shell: Boolean = true,
+    val filesystem: Boolean = true,
+    val network: Boolean = true,
+    val subagent: Boolean = true,
+    val memory: Boolean = true,
+    val mcp: Boolean = true
+)
+
+@Serializable
 data class BorerSettings(
     val inlineBudget: Int = 8 * 1024,
     val compactAt: Double = 0.8,
@@ -65,8 +162,21 @@ data class BorerSettings(
     val prootBinaryPath: String = "",
     val prootRootfsPath: String = "",
     val backgroundKeepAlive: Boolean = true,
-    val persistentWakeLock: Boolean = false
-)
+    val persistentWakeLock: Boolean = false,
+    val executionMode: ExecutionMode? = null,
+    val supervisedApprovals: Boolean = true,
+    val toolsets: ToolsetConfig = ToolsetConfig(),
+    val defaultToolTimeoutMs: Long = 120_000L,
+    val maxToolOutputBytes: Int = 64 * 1024,
+    val doomLoopThreshold: Int = 3,
+    val autoCompactWithSummary: Boolean = true,
+    val agentsMdEnabled: Boolean = true,
+    val agentProfile: AgentProfile = AgentProfile.GENERAL,
+    val mcpServers: List<McpServerConfig> = listOf(defaultWhsearchMcpServer())
+) {
+    val resolvedExecutionMode: ExecutionMode
+        get() = executionMode ?: if (defaultAutonomous) ExecutionMode.AUTONOMOUS else ExecutionMode.SUPERVISED
+}
 
 @Serializable
 data class NotifyConfig(

@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -21,13 +23,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.CallSplit
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material.icons.outlined.Unarchive
+import androidx.compose.material.icons.automirrored.rounded.CallSplit
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -41,9 +44,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,6 +59,8 @@ import com.example.ui.BorerViewModel
 import com.example.ui.HuntItemStatus
 import com.example.ui.HuntQueueItem
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun SessionsScreen(
@@ -68,6 +75,26 @@ fun SessionsScreen(
     val huntItems by vm.huntItems.collectAsStateWithLifecycle()
     val huntRunning by vm.huntRunning.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingExportSessionId by remember { mutableStateOf<String?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/markdown")
+    ) { uri ->
+        val sid = pendingExportSessionId
+        pendingExportSessionId = null
+        if (uri != null && sid != null) {
+            scope.launch(Dispatchers.IO) {
+                val md = vm.buildSessionMarkdownExport(sid)
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(md.toByteArray(Charsets.UTF_8))
+                    }
+                }
+            }
+        }
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -78,7 +105,7 @@ fun SessionsScreen(
             .imePadding()
     ) {
         CleanScreenTopBar(
-            title = "Sessions & Hunt",
+            title = "Sessions & Batch",
             onOpenDrawer = onOpenDrawer
         )
 
@@ -86,7 +113,7 @@ fun SessionsScreen(
             tabs = listOf(
                 SegmentTab("Active", "tab_sessions_active", count = activeSessions.size),
                 SegmentTab("Archived", "tab_sessions_archived", count = archivedSessions.size),
-                SegmentTab("Hunt", "tab_hunt_queue", count = huntItems.size.takeIf { it > 0 })
+                SegmentTab("Batch", "tab_hunt_queue", count = huntItems.size.takeIf { it > 0 })
             ),
             selectedIndex = tabIdx,
             onSelect = { tabIdx = it },
@@ -99,6 +126,10 @@ fun SessionsScreen(
                 activeRunId = activeRunId,
                 isArchived = false,
                 onResume = { if (vm.resumeSession(it)) onResumedOrStarted() },
+                onExport = {
+                    pendingExportSessionId = it.id
+                    exportLauncher.launch("borer-${it.id}.md")
+                },
                 onFork = { if (vm.forkSession(it)) onResumedOrStarted() },
                 onToggleArchive = { vm.archiveSession(it.id, true) },
                 onDelete = { vm.deleteSession(it.id) }
@@ -108,6 +139,10 @@ fun SessionsScreen(
                 activeRunId = activeRunId,
                 isArchived = true,
                 onResume = { if (vm.resumeSession(it)) onResumedOrStarted() },
+                onExport = {
+                    pendingExportSessionId = it.id
+                    exportLauncher.launch("borer-${it.id}.md")
+                },
                 onFork = { if (vm.forkSession(it)) onResumedOrStarted() },
                 onToggleArchive = { vm.archiveSession(it.id, false) },
                 onDelete = { vm.deleteSession(it.id) }
@@ -128,13 +163,14 @@ private fun SessionListPane(
     activeRunId: String,
     isArchived: Boolean,
     onResume: (SessionEntity) -> Unit,
+    onExport: (SessionEntity) -> Unit,
     onFork: (SessionEntity) -> Unit,
     onToggleArchive: (SessionEntity) -> Unit,
     onDelete: (SessionEntity) -> Unit
 ) {
     if (sessions.isEmpty()) {
         CleanEmptyState(
-            icon = if (isArchived) Icons.Outlined.Archive else Icons.Outlined.History,
+            icon = if (isArchived) Icons.Rounded.Archive else Icons.Rounded.History,
             title = if (isArchived) "No archived sessions" else "No active sessions yet",
             subtitle = if (isArchived) {
                 "Archived runs will appear here for later review or forking."
@@ -214,7 +250,7 @@ private fun SessionListPane(
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                             modifier = Modifier.testTag("resume_${session.id}")
                         ) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = "Resume session", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Resume session", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Resume")
                         }
@@ -223,11 +259,21 @@ private fun SessionListPane(
                     }
                     Spacer(Modifier.weight(1f))
                     IconButton(
+                        onClick = { onExport(session) },
+                        modifier = Modifier.minimumInteractiveComponentSize().testTag("export_${session.id}")
+                    ) {
+                        Icon(
+                            Icons.Rounded.Download,
+                            contentDescription = "Export session Markdown",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
                         onClick = { onFork(session) },
                         modifier = Modifier.minimumInteractiveComponentSize().testTag("fork_${session.id}")
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Outlined.CallSplit,
+                            Icons.AutoMirrored.Rounded.CallSplit,
                             contentDescription = "Fork session",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -237,7 +283,7 @@ private fun SessionListPane(
                         modifier = Modifier.minimumInteractiveComponentSize().testTag("archive_${session.id}")
                     ) {
                         Icon(
-                            imageVector = if (isArchived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
+                            imageVector = if (isArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
                             contentDescription = if (isArchived) "Unarchive session" else "Archive session",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -247,7 +293,7 @@ private fun SessionListPane(
                         modifier = Modifier.minimumInteractiveComponentSize().testTag("delete_${session.id}")
                     ) {
                         Icon(
-                            Icons.Outlined.Delete,
+                            Icons.Rounded.DeleteOutline,
                             contentDescription = "Delete session",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
@@ -284,9 +330,9 @@ private fun HuntQueuePane(
     onStart: (targetsRaw: String, templateRaw: String) -> Unit,
     onStop: () -> Unit
 ) {
-    var targetsText by remember { mutableStateOf("http://127.0.0.1:8080\n") }
+    var targetsText by remember { mutableStateOf("") }
     var templateText by remember {
-        mutableStateOf("Hunt for vulnerabilities in {target}. Map the surface, test parameters, verify every suspected issue, write a report, and finish.")
+        mutableStateOf("Complete this task: {target}. Gather info or files, verify results with tools, write a clear summary, and finish.")
     }
 
     val doneCount = remember(items) { items.count { it.status == HuntItemStatus.DONE } }
@@ -306,20 +352,20 @@ private fun HuntQueuePane(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Unattended Hunt Queue", style = MaterialTheme.typography.titleMedium)
+                        Text("Batch Task Queue", style = MaterialTheme.typography.titleMedium)
                         if (running) {
                             CleanStatusBadge(text = "RUNNING", inverted = true)
                         }
                     }
                     Text(
-                        "One isolated autonomous run per target line, executed sequentially.",
+                        "One isolated autonomous session per line (research topics, coding tasks, URLs, or targets).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     CleanOutlinedTextField(
                         value = targetsText,
                         onValueChange = { targetsText = it },
-                        label = "Targets (one per line)",
+                        label = "Items / tasks (one per line)",
                         minLines = 3,
                         maxLines = 6,
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
@@ -342,16 +388,16 @@ private fun HuntQueuePane(
                                 onClick = { onStart(targetsText, templateText) },
                                 modifier = Modifier.testTag("start_hunt_queue_button")
                             ) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = "Start queue", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "Start queue", modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Start Hunt Queue")
+                                Text("Start Batch Queue")
                             }
                         } else {
                             CleanOutlinedButton(
                                 onClick = onStop,
                                 modifier = Modifier.testTag("stop_hunt_queue_button")
                             ) {
-                                Icon(Icons.Outlined.Stop, contentDescription = "Stop queue", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Rounded.Stop, contentDescription = "Stop queue", modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Stop Queue")
                             }

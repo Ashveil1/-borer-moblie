@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import java.io.File
+import java.io.RandomAccessFile
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -41,7 +42,8 @@ val bashTool = object : Tool {
         val command = (args["command"] as? JsonPrimitive)?.contentOrNull.orEmpty()
         if (command.isBlank()) return@withContext ToolResult("error: empty command", isError = true)
         val cwd = (args["cwd"] as? JsonPrimitive)?.contentOrNull?.let { File(it) } ?: ctx.workdir
-        val timeoutMs = ((args["timeout_ms"] as? JsonPrimitive)?.intOrNull ?: 120_000).coerceIn(500, 1_800_000).toLong()
+        val defaultTimeout = ctx.settings.defaultToolTimeoutMs.coerceIn(1_000L, 1_800_000L)
+        val timeoutMs = ((args["timeout_ms"] as? JsonPrimitive)?.intOrNull?.toLong() ?: defaultTimeout).coerceIn(500L, 1_800_000L)
         val stdinText = (args["stdin"] as? JsonPrimitive)?.contentOrNull
 
         val tmpDir = File(ctx.runDir, "tmp").apply { mkdirs() }
@@ -143,11 +145,11 @@ class BackgroundJobs(
             live[id] = jobEntry
             val runner = scope.launch(Dispatchers.IO) {
                 val res = UbuntuProotRuntime.exec(appContext, command, workdir, env, 1_800_000L, null, settings)
-                logFile.writeText(res.output)
+                runCatching { logFile.writeText(res.output) }
                 if (!jobEntry.killed) {
                     val code = res.exitCode ?: -1
                     jobEntry.exitCode = code
-                    db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
+                    runCatching { db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed") }
                     log.append("tool.result", mapOf("job" to id, "exitCode" to code))
                 }
             }
@@ -167,7 +169,7 @@ class BackgroundJobs(
                 val code = proc.waitFor()
                 if (!job.killed) {
                     job.exitCode = code
-                    db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed")
+                    runCatching { db.jobDao().completeSync(id, Instant.now().toString(), code, if (code == 0) "done" else "failed") }
                     log.append("tool.result", mapOf("job" to id, "exitCode" to code))
                 }
             }
@@ -179,7 +181,21 @@ class BackgroundJobs(
     override fun tail(id: String, lines: Int): String {
         val path = live[id]?.logFile ?: db.jobDao().getJobSync(id)?.logPath?.let { File(it) }
         if (path == null || !path.exists()) return "error: no log for job $id"
-        return path.readLines().takeLast(lines.coerceAtLeast(1)).joinToString("\n").ifBlank { "(no output yet)" }
+        val want = lines.coerceIn(1, 2000)
+        return runCatching {
+            val len = path.length()
+            if (len <= 0L) return "(no output yet)"
+            val maxBytes = 256L * 1024L
+            val start = (len - maxBytes).coerceAtLeast(0L)
+            val chunk = RandomAccessFile(path, "r").use { raf ->
+                raf.seek(start)
+                val buf = ByteArray((len - start).toInt().coerceAtLeast(0))
+                raf.readFully(buf)
+                String(buf, Charsets.UTF_8)
+            }
+            val seq = chunk.lineSequence().let { if (start > 0L) it.drop(1) else it }
+            seq.toList().takeLast(want).joinToString("\n").ifBlank { "(no output yet)" }
+        }.getOrElse { "(unable to read job log: ${it.message})" }
     }
 
     override fun poll(id: String): JobPollResult {
@@ -204,7 +220,7 @@ class BackgroundJobs(
         l.process?.destroyForcibly()
         l.coroutineJob?.cancel()
         l.exitCode = -1
-        db.jobDao().completeSync(id, Instant.now().toString(), -1, "killed")
+        runCatching { db.jobDao().completeSync(id, Instant.now().toString(), -1, "killed") }
     }
 
     override fun list(): List<JobSummary> =

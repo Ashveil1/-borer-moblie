@@ -23,8 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -76,6 +76,8 @@ object ToolSummaryFormatter {
                 val url = str("url", "target")
                 if (url != null) "$method $url" else method
             }
+            "web_fetch" -> str("url").orEmpty()
+            "web_search" -> str("query").orEmpty()
             "net" -> {
                 val host = str("host", "target")
                 val port = str("port")
@@ -111,8 +113,39 @@ object ToolSummaryFormatter {
             "session" -> listOfNotNull(str("action"), str("label")).joinToString(" · ")
             "skill" -> str("name", "action").orEmpty()
             "todo" -> listOfNotNull(str("action"), str("text", "id", "item", "task")).joinToString(" · ")
+            "apply_patch" -> {
+                val patch = str("patch").orEmpty()
+                val fileLine = patch.lineSequence()
+                    .map { it.trim() }
+                    .firstOrNull {
+                        it.startsWith("*** Update File:") ||
+                            it.startsWith("*** Add File:") ||
+                            it.startsWith("*** Delete File:") ||
+                            it.startsWith("+++ ")
+                    }
+                    ?.removePrefix("*** Update File:")
+                    ?.removePrefix("*** Add File:")
+                    ?.removePrefix("*** Delete File:")
+                    ?.removePrefix("+++ b/")
+                    ?.removePrefix("+++ ")
+                    ?.trim()
+                fileLine ?: "workspace patch"
+            }
+            "task" -> listOfNotNull(str("role"), str("prompt")?.take(36)).joinToString(" · ")
+            "propose_plan" -> str("title", "summary").orEmpty()
             "finish" -> str("outcome", "summary").orEmpty()
-            else -> obj.values.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { s -> s.isNotEmpty() } }.orEmpty()
+            "mcp_resource" -> listOfNotNull(str("action"), str("server"), str("uri")).joinToString(" · ")
+            "mcp_prompt" -> listOfNotNull(str("action"), str("server"), str("name")).joinToString(" · ")
+            else -> {
+                val firstArg = obj.values.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { s -> s.isNotEmpty() } }.orEmpty()
+                if (name.startsWith("mcp__")) {
+                    val parts = name.removePrefix("mcp__").split("__", limit = 2)
+                    val label = if (parts.size == 2) "${parts[0]}/${parts[1]}" else name.removePrefix("mcp__")
+                    listOfNotNull(label, firstArg.takeIf { it.isNotBlank() }).joinToString(" · ")
+                } else {
+                    firstArg
+                }
+            }
         }
 
         return summary.replace('\n', ' ').replace(Regex("\\s+"), " ").trim().take(64)
@@ -219,17 +252,18 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
 @Composable
 fun MarkdownProse(
     text: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selectable: Boolean = true
 ) {
     val blocks = remember(text) { parseMarkdownBlocks(text) }
     val codeBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val codeFg = MaterialTheme.colorScheme.onSurface
     val linkColor = MaterialTheme.colorScheme.secondary
 
-    SelectionContainer(modifier = modifier) {
+    val body: @Composable () -> Unit = {
         Column(
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = (if (selectable) Modifier else modifier).fillMaxWidth()
         ) {
             blocks.forEach { block ->
                 when (block) {
@@ -351,6 +385,14 @@ fun MarkdownProse(
             }
         }
     }
+
+    if (selectable) {
+        SelectionContainer(modifier = modifier) {
+            body()
+        }
+    } else {
+        body()
+    }
 }
 
 @Composable
@@ -401,7 +443,7 @@ private fun MarkdownCodeBlockCard(
                     .padding(horizontal = 7.dp, vertical = 3.dp)
             ) {
                 Icon(
-                    imageVector = if (copied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
+                    imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
                     contentDescription = "Copy code",
                     tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(13.dp)

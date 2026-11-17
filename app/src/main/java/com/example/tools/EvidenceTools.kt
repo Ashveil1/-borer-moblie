@@ -75,10 +75,10 @@ object Cvss31Calculator {
 val verifyTool = object : Tool {
     override val name = "verify"
     override val description =
-        "Re-run a recorded proof-of-concept and measure whether it is reproducible. Runs N times, hashes each output, checks your expected pattern, and reports a pass/fail verdict."
+        "Re-run a command or test N times to verify reproducibility. Runs N times, hashes each output, checks your expected pattern or exit code, and reports a PASS/FAIL verdict."
     override val parameters: JsonObject = schemaObject(
         properties = mapOf(
-            "command" to schemaProp("string", "shell command that demonstrates the issue"),
+            "command" to schemaProp("string", "shell command or test script to verify"),
             "runs" to schemaProp("number", "default 3"),
             "expect" to schemaProp("string", "regex that must match in a successful run"),
             "must_pass" to schemaProp("number", "minimum successful runs (default 2)"),
@@ -167,8 +167,8 @@ val verifyTool = object : Tool {
         val msg = buildString {
             appendLine("verdict: $verdict · $passed/${results.size} matched · distinct outputs: $uniqueHashes")
             appendLine(
-                if (verdict == "PASS") "reproducible: safe to report"
-                else "not reproducible: do not report this as a finding yet — tighten the PoC or treat it as a false positive"
+                if (verdict == "PASS") "reproducible: verified"
+                else "not reproducible: command did not meet pass threshold"
             )
             appendLine("--- runs ---")
             append(spilled)
@@ -180,12 +180,12 @@ val verifyTool = object : Tool {
 val reportTool = object : Tool {
     override val name = "report"
     override val description =
-        "Write a structured finding. Validates the fields, computes the CVSS 3.1 base score when you pass a v3.1 vector, and writes reports/<slug>.md."
+        "Save a structured Markdown report or technical finding to reports/<slug>.md. Computes a CVSS 3.1 score automatically when a vector is provided."
     override val parameters: JsonObject = schemaObject(
         properties = mapOf(
             "action" to schemaProp("string", "write | list (default write)"),
             "title" to schemaProp("string"),
-            "asset" to schemaProp("string", "affected host / endpoint"),
+            "asset" to schemaProp("string", "subject, project, host, or endpoint"),
             "severity" to schemaProp("string", "critical | high | medium | low | informational"),
             "cvss_vector" to schemaProp("string", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"),
             "summary" to schemaProp("string"),

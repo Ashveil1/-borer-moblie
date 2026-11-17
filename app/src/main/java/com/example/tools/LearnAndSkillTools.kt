@@ -11,11 +11,11 @@ import java.io.File
 fun learningTool(memory: LearningMemory): Tool = object : Tool {
     override val name = "learn"
     override val description =
-        "Write to your persistent memory, which survives across sessions. Record what worked (action=experience), save a reusable procedure (action=technique), or note host history (action=target)."
+        "Write to persistent cross-session memory: record what approach worked (action=experience), save a reusable workflow (action=technique), or save domain/host/project context (action=target)."
     override val parameters: JsonObject = schemaObject(
         properties = mapOf(
             "action" to schemaProp("string", "experience | technique | target"),
-            "fingerprint" to schemaProp("string", "e.g. php+mysql|sqli"),
+            "fingerprint" to schemaProp("string", "e.g. python+fastapi, android+compose, or stack|topic"),
             "approach" to schemaProp("string"),
             "outcome" to schemaProp("string"),
             "worked" to schemaProp("boolean"),

@@ -15,7 +15,7 @@ val notesTool = object : Tool {
     override val parameters: JsonObject = schemaObject(
         properties = mapOf(
             "action" to schemaProp("string", "put | get | query | delete | digest"),
-            "kind" to schemaProp("string", "asset | endpoint | param | hypothesis | finding | credential | blocked | fact | todo"),
+            "kind" to schemaProp("string", "fact | todo | preference | project | reference | finding | asset | endpoint | param | hypothesis | credential | blocked"),
             "key" to schemaProp("string", "short unique identifier within the kind"),
             "body" to schemaProp("string", "markdown body"),
             "tags" to schemaProp("array", "tags", "string"),
@@ -188,7 +188,7 @@ val todoTool = object : Tool {
 val scopeTool = object : Tool {
     override val name = "scope"
     override val description =
-        "Read-only view of the engagement record: aggression level, requests made, and every host reached with a hit count."
+        "Read-only view of outbound network activity and hosts reached during the current session."
     override val parameters: JsonObject = schemaObject(
         properties = mapOf("action" to schemaProp("string", "status")),
         required = listOf("action")
@@ -198,8 +198,7 @@ val scopeTool = object : Tool {
         val hosts = ctx.gate.reached.entries.sortedByDescending { it.value }
         return ToolResult(
             buildList {
-                add("mode: open — nothing is off limits")
-                add("aggression: ${ctx.gate.defaultAggression.wire}")
+                add("mode: open — outbound requests tracked")
                 add("requests made: ${ctx.gate.requestsMade}")
                 if (hosts.isEmpty()) add("hosts reached: none yet")
                 else {
@@ -214,11 +213,11 @@ val scopeTool = object : Tool {
 val finishTool = object : Tool {
     override val name = "finish"
     override val description =
-        "End this run. Call it when the objective is complete, when you have exhausted what your tools allow, or when you decide the target cannot be broken."
+        "End an autonomous multi-step run. Call it when the objective is complete, when you have exhausted what your tools allow, or when the task is blocked."
     override val parameters: JsonObject = schemaObject(
         properties = mapOf(
-            "summary" to schemaProp("string", "markdown summary of what you did, found, and what you would do next"),
-            "outcome" to schemaProp("string", "found | exhausted | blocked | give_up")
+            "summary" to schemaProp("string", "markdown summary of what you did, outputs produced, and recommended next steps"),
+            "outcome" to schemaProp("string", "done | found | exhausted | blocked | give_up")
         ),
         required = listOf("summary")
     )

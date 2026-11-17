@@ -2,9 +2,11 @@ package com.example.tools
 
 import com.example.data.ArtifactStore
 import com.example.data.BorerSettings
+import com.example.data.CheckpointManager
 import com.example.data.EventLog
 import com.example.data.RunDatabase
 import com.example.data.RunStore
+import com.example.mcp.McpManager
 import com.example.runtime.ShellExecResult
 import com.example.scope.EngagementGate
 import kotlinx.coroutines.CancellationException
@@ -48,9 +50,15 @@ class ToolContext(
     var finish: ((summary: String, outcome: String?) -> Unit)? = null,
     val jobs: JobRegistry? = null,
     val proxyUrl: String? = null,
+    val checkpoints: CheckpointManager? = null,
+    var currentTurnProvider: () -> Int = { 0 },
+    var onPlanProposal: ((title: String, summary: String, steps: List<String>) -> Unit)? = null,
+    var subagentRunner: (suspend (role: String, prompt: String, maxTurns: Int) -> ToolResult)? = null,
+    val isSubagent: Boolean = false,
     val shellExecutor: suspend (command: String, cwd: File, env: Map<String, String>, timeoutMs: Long, stdin: String?) -> ShellExecResult = { command, cwd, env, timeoutMs, stdin ->
         defaultLocalShellExec(command, cwd, env, timeoutMs, stdin)
-    }
+    },
+    val mcpManager: McpManager? = null
 ) {
     val settings: BorerSettings get() = settingsProvider()
 }
@@ -73,8 +81,10 @@ private suspend fun defaultLocalShellExec(
         env.forEach { (k, v) -> pb.environment()[k] = v }
         val started = pb.start()
         proc = started
+        val maxCapturedBytes = 8 * 1024 * 1024
         val outputLock = Any()
         val outputBuf = java.io.ByteArrayOutputStream()
+        var truncatedByCap = false
         readerThread = Thread {
             runCatching {
                 val buf = ByteArray(4096)
@@ -82,7 +92,14 @@ private suspend fun defaultLocalShellExec(
                 while (!Thread.currentThread().isInterrupted) {
                     val n = stream.read(buf)
                     if (n < 0) break
-                    if (n > 0) synchronized(outputLock) { outputBuf.write(buf, 0, n) }
+                    if (n > 0) synchronized(outputLock) {
+                        val remaining = maxCapturedBytes - outputBuf.size()
+                        if (remaining > 0) {
+                            outputBuf.write(buf, 0, minOf(n, remaining))
+                        } else {
+                            truncatedByCap = true
+                        }
+                    }
                 }
             }
         }.apply {
@@ -110,7 +127,10 @@ private suspend fun defaultLocalShellExec(
         if (finished && isActive && !started.isAlive) {
             runCatching { stdinThread.join(500) }
             runCatching { readerThread.join(1_000) }
-            val output = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+            val output = synchronized(outputLock) {
+                val raw = outputBuf.toString(Charsets.UTF_8.name())
+                if (truncatedByCap) "$raw\n[output truncated at 8MB limit]" else raw
+            }
             ShellExecResult(started.exitValue(), output, timedOut = false)
         } else {
             started.destroyForcibly()
@@ -120,7 +140,10 @@ private suspend fun defaultLocalShellExec(
             stdinThread.interrupt()
             readerThread.interrupt()
             runCatching { readerThread.join(200) }
-            val partial = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+            val partial = synchronized(outputLock) {
+                val raw = outputBuf.toString(Charsets.UTF_8.name())
+                if (truncatedByCap) "$raw\n[output truncated at 8MB limit]" else raw
+            }
             ShellExecResult(null, partial, timedOut = true)
         }
     } catch (e: CancellationException) {
@@ -175,6 +198,9 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
     fun has(name: String): Boolean = tools.containsKey(name)
     fun names(): List<String> = tools.keys.toList()
 
+    fun filtered(predicate: (String) -> Boolean): ToolRegistry =
+        ToolRegistry(tools.values.filter { predicate(it.name) })
+
     fun defs(): List<com.example.provider.ToolDef> =
         tools.values.map { com.example.provider.ToolDef(it.name, it.description, it.parameters) }
 
@@ -199,7 +225,14 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
         }
         return try {
             val res = withContext(Dispatchers.IO) { tool.run(args, ctx) }
-            ToolExecutionResult(res.content, res.isError, System.currentTimeMillis() - started)
+            val maxBytes = ctx.settings.maxToolOutputBytes.coerceIn(4 * 1024, 512 * 1024)
+            val finalText = if (res.artifactId == null && res.content.toByteArray(Charsets.UTF_8).size > maxBytes) {
+                val head = res.content.take(maxBytes / 2)
+                "$head\n\n[output clamped at $maxBytes bytes by guardrail]"
+            } else {
+                res.content
+            }
+            ToolExecutionResult(finalText, res.isError, System.currentTimeMillis() - started)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {

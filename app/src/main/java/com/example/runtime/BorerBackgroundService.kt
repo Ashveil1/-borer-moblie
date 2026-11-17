@@ -138,7 +138,9 @@ class BorerBackgroundService : Service() {
         super.onCreate()
         ensureChannel()
         BackgroundKeepAliveController.markServiceRunning(true)
-        acquireLocks(forceRefresh = true)
+        if (BackgroundKeepAliveController.snapshot.value.shouldKeepServiceRunning) {
+            acquireLocks(forceRefresh = true)
+        }
         collectorJob = serviceScope.launch {
             launch {
                 BackgroundKeepAliveController.snapshot.collect { snap ->
@@ -169,7 +171,13 @@ class BorerBackgroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val snap = BackgroundKeepAliveController.snapshot.value
-        startForegroundWithType(buildNotification(snap))
+        val startedFg = startForegroundWithType(buildNotification(snap))
+        if (!startedFg) {
+            releaseLocks()
+            BackgroundKeepAliveController.markServiceRunning(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         when (intent?.action) {
             ACTION_STOP_RUN -> {
@@ -211,18 +219,21 @@ class BorerBackgroundService : Service() {
         super.onDestroy()
     }
 
-    private fun startForegroundWithType(notification: Notification) {
+    private fun startForegroundWithType(notification: Notification): Boolean {
         val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         } else {
             0
         }
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
+        return runCatching {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
+            true
+        }.getOrDefault(false)
     }
 
     private fun stopForegroundAndSelf() {
         releaseLocks()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
 

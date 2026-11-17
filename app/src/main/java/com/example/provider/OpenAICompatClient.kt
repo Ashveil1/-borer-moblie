@@ -76,9 +76,12 @@ class OpenAICompatClient(
                 data.mapNotNull { el ->
                     val item = el as? JsonObject ?: return@mapNotNull null
                     val id = item["id"].asStr() ?: return@mapNotNull null
+                    val topProvCtx = (item["top_provider"] as? JsonObject)?.get("context_length").asInt()
                     val ctx = item["context_length"].asInt()
+                        ?: topProvCtx
                         ?: item["max_model_len"].asInt()
                         ?: item["max_context_length"].asInt()
+                        ?: item["input_token_limit"].asInt()
                     ModelCatalogEntry(id = id, context = ctx)
                 }
             }
@@ -140,19 +143,36 @@ class OpenAICompatClient(
                     )
                 }
                 val body = res.body ?: throw ProviderException("empty response body", res.code, true)
+                val contentType = res.header("Content-Type").orEmpty().lowercase()
+                if (contentType.contains("application/json") && !contentType.contains("text/event-stream")) {
+                    val rawJson = body.string()
+                    emitNonStreamJsonEvents(rawJson, isResponses) { ev -> emit(ev) }
+                    return@flow
+                }
+
                 val source = body.source()
 
                 val toolCalls = linkedMapOf<Int, MutableToolCall>()
+                val toolIdToIdx = linkedMapOf<String, Int>()
+                var nextChatIdx = 0
                 val responseItemIdx = linkedMapOf<String, Int>()
                 var nextRespIdx = 0
                 var emittedTools = false
+                var sawAnySseData = false
+                val nonSseFallback = StringBuilder()
                 var pendingFinishReason: String? = null
 
                 while (!source.exhausted() && coroutineContext.isActive) {
                     val rawLine = source.readUtf8Line() ?: break
                     val line = rawLine.trim()
                     if (line.isEmpty() || line.startsWith(":")) continue
-                    if (!line.startsWith("data:")) continue
+                    if (!line.startsWith("data:")) {
+                        if (!sawAnySseData && nonSseFallback.length < 512 * 1024) {
+                            nonSseFallback.append(line).append('\n')
+                        }
+                        continue
+                    }
+                    sawAnySseData = true
                     val data = line.removePrefix("data:").trim()
                     if (data == "[DONE]") {
                         if (!emittedTools) {
@@ -274,10 +294,19 @@ class OpenAICompatClient(
                         emit(ProviderEvent.Reasoning(reasoning))
                     }
 
-                    (delta["tool_calls"] as? JsonArray)?.forEach { tcEl ->
-                        val tcObj = tcEl as? JsonObject ?: return@forEach
-                        val index = tcObj["index"].asInt() ?: 0
+                    (delta["tool_calls"] as? JsonArray)?.forEachIndexed { arrayPos, tcEl ->
+                        val tcObj = tcEl as? JsonObject ?: return@forEachIndexed
                         val id = tcObj["id"].asStr()
+                        val explicitIdx = tcObj["index"].asInt()
+                        val index = when {
+                            explicitIdx != null -> {
+                                if (explicitIdx >= nextChatIdx) nextChatIdx = explicitIdx + 1
+                                explicitIdx
+                            }
+                            !id.isNullOrEmpty() -> toolIdToIdx.getOrPut(id) { nextChatIdx++ }
+                            else -> arrayPos.coerceAtLeast(nextChatIdx - 1).coerceAtLeast(0)
+                        }
+                        if (!id.isNullOrEmpty()) toolIdToIdx[id] = index
                         val fnObj = tcObj["function"] as? JsonObject
                         val name = fnObj?.get("name").asStr()
                         val args = fnObj?.get("arguments").asStr().orEmpty()
@@ -303,6 +332,13 @@ class OpenAICompatClient(
                         }
                     }
                 }
+                if (!sawAnySseData && nonSseFallback.isNotEmpty()) {
+                    val trimmed = nonSseFallback.toString().trim()
+                    if (trimmed.startsWith("{")) {
+                        emitNonStreamJsonEvents(trimmed, isResponses) { ev -> emit(ev) }
+                        return@flow
+                    }
+                }
                 if (!emittedTools && toolCalls.isNotEmpty()) {
                     for ((index, tc) in toolCalls) {
                         emittedTools = true
@@ -315,6 +351,84 @@ class OpenAICompatClient(
             cancelHandle?.dispose()
             call.cancel()
         }
+    }
+
+    private suspend fun emitNonStreamJsonEvents(
+        rawJson: String,
+        isResponses: Boolean,
+        emitEvent: suspend (ProviderEvent) -> Unit
+    ) {
+        val root = runCatching { json.parseToJsonElement(rawJson) as? JsonObject }.getOrNull() ?: run {
+            emitEvent(ProviderEvent.Done("stop"))
+            return
+        }
+        val errEl = root["error"]?.takeIf { it !is JsonNull }
+        if (errEl != null) {
+            val errMsg = (errEl as? JsonObject)?.get("message").asStr() ?: errEl.asStr() ?: errEl.toString()
+            throw ProviderException("provider error: $errMsg", null, false, errEl.toString())
+        }
+
+        (root["usage"] as? JsonObject)?.let { u ->
+            val prompt = u["prompt_tokens"].asInt() ?: u["input_tokens"].asInt() ?: 0
+            val completion = u["completion_tokens"].asInt() ?: u["output_tokens"].asInt() ?: 0
+            val cached = (u["prompt_tokens_details"] as? JsonObject)?.get("cached_tokens").asInt()
+                ?: (u["input_tokens_details"] as? JsonObject)?.get("cached_tokens").asInt()
+                ?: 0
+            val total = u["total_tokens"].asInt() ?: (prompt + completion)
+            emitEvent(ProviderEvent.UsageUpdate(Usage(prompt, completion, cached, total)))
+        }
+
+        if (isResponses) {
+            var tcIdx = 0
+            (root["output"] as? JsonArray)?.forEach { el ->
+                val item = el as? JsonObject ?: return@forEach
+                when (item["type"].asStr()) {
+                    "message" -> {
+                        (item["content"] as? JsonArray)?.forEach { cEl ->
+                            val cObj = cEl as? JsonObject ?: return@forEach
+                            val txt = cObj["text"].asStr() ?: cObj["content"].asStr()
+                            if (!txt.isNullOrEmpty()) emitEvent(ProviderEvent.Text(txt))
+                        }
+                    }
+                    "reasoning" -> {
+                        (item["summary"] as? JsonArray)?.forEach { sEl ->
+                            val txt = (sEl as? JsonObject)?.get("text").asStr()
+                            if (!txt.isNullOrEmpty()) emitEvent(ProviderEvent.Reasoning(txt))
+                        }
+                    }
+                    "function_call" -> {
+                        val callId = item["call_id"].asStr() ?: item["id"].asStr() ?: "fc_$tcIdx"
+                        val name = item["name"].asStr().orEmpty()
+                        val args = item["arguments"].asStr().orEmpty()
+                        emitEvent(ProviderEvent.ToolCall(tcIdx++, callId, name, args))
+                    }
+                }
+            }
+            if ((root["output"] as? JsonArray).isNullOrEmpty()) {
+                root["output_text"].asStr()?.takeIf { it.isNotEmpty() }?.let {
+                    emitEvent(ProviderEvent.Text(it))
+                }
+            }
+            emitEvent(ProviderEvent.Done("stop"))
+            return
+        }
+
+        val choice = (root["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
+        val message = choice?.get("message") as? JsonObject
+        val reasoning = message?.get("reasoning_content").asStr() ?: message?.get("reasoning").asStr()
+        if (!reasoning.isNullOrEmpty()) emitEvent(ProviderEvent.Reasoning(reasoning))
+        val content = message?.get("content").asStr()
+        if (!content.isNullOrEmpty()) emitEvent(ProviderEvent.Text(content))
+
+        (message?.get("tool_calls") as? JsonArray)?.forEachIndexed { idx, tcEl ->
+            val tcObj = tcEl as? JsonObject ?: return@forEachIndexed
+            val id = tcObj["id"].asStr() ?: "call_$idx"
+            val fn = tcObj["function"] as? JsonObject
+            val name = fn?.get("name").asStr().orEmpty()
+            val args = fn?.get("arguments").asStr().orEmpty()
+            emitEvent(ProviderEvent.ToolCall(idx, id, name, args))
+        }
+        emitEvent(ProviderEvent.Done(choice?.get("finish_reason").asStr() ?: "stop"))
     }
 
     private fun isReasoningModel(model: String): Boolean {

@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
@@ -35,6 +36,10 @@ class BorerCrashReproTest {
     fun launchMainActivity_andNavigateAllScreens_doesNotCrash() {
         composeRule.waitForIdle()
 
+        // 0. Top-right '+' New Session button works without crashing
+        composeRule.onNodeWithTag("new_session_button").performClick()
+        composeRule.waitForIdle()
+
         // 1. Open Model / Session bottom sheet
         composeRule.onNodeWithTag("model_selector_pill").performClick()
         composeRule.waitForIdle()
@@ -58,13 +63,13 @@ class BorerCrashReproTest {
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
 
-        // Exercise Settings tabs: Providers -> Add Provider dialog -> Runtime -> Agent -> Alerts
+        // Exercise Settings tabs: Providers -> Add Provider dialog -> Runtime -> MCP -> Agent -> Alerts
         composeRule.onNodeWithTag("add_provider_button").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Cancel").performClick()
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("tab_settings_runtime").performClick()
+        composeRule.onNodeWithTag("tab_settings_runtime").performScrollTo().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("switch_persistent_wakelock").assertExists()
         composeRule.onNodeWithTag("open_battery_settings_button").assertExists()
@@ -74,9 +79,23 @@ class BorerCrashReproTest {
         composeRule.onNodeWithTag("shell_backend_android").performClick()
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("tab_settings_agent").performClick()
+        composeRule.onNodeWithTag("tab_settings_mcp").performScrollTo().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("tab_settings_alerts").performClick()
+        composeRule.onNodeWithTag("install_whsearch_button").assertExists()
+        composeRule.onNodeWithTag("add_mcp_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("mcp_name_input").assertExists()
+        composeRule.onNodeWithText("Cancel").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("import_mcp_json_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("mcp_import_json_input").assertExists()
+        composeRule.onNodeWithText("Cancel").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("tab_settings_agent").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tab_settings_alerts").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         // 4. Navigate to Sessions & Hunt

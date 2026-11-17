@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.io.File
+import java.io.RandomAccessFile
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -127,9 +128,7 @@ class EventLog(val dir: File) {
     private fun loadExistingEvents(): List<EventRecord> {
         if (!eventsFile.exists()) return emptyList()
         return runCatching {
-            eventsFile.readLines()
-                .filter { it.isNotBlank() }
-                .takeLast(300)
+            readTailLines(eventsFile, maxBytes = 512L * 1024L, maxLines = 300)
                 .mapNotNull { line -> runCatching { json.decodeFromString<EventRecord>(line) }.getOrNull() }
                 .also { list -> seqCounter.set(list.maxOfOrNull { it.seq } ?: 0) }
         }.getOrDefault(emptyList())
@@ -138,11 +137,28 @@ class EventLog(val dir: File) {
     private fun loadExistingHttpLogs(): List<HttpLogRecord> {
         if (!httpFile.exists()) return emptyList()
         return runCatching {
-            httpFile.readLines()
-                .filter { it.isNotBlank() }
-                .takeLast(300)
+            readTailLines(httpFile, maxBytes = 512L * 1024L, maxLines = 300)
                 .mapNotNull { line -> runCatching { json.decodeFromString<HttpLogRecord>(line) }.getOrNull() }
         }.getOrDefault(emptyList())
+    }
+
+    private fun readTailLines(file: File, maxBytes: Long, maxLines: Int): List<String> {
+        if (!file.exists() || !file.isFile) return emptyList()
+        val length = file.length()
+        if (length <= 0L) return emptyList()
+        val start = (length - maxBytes).coerceAtLeast(0L)
+        val raw = RandomAccessFile(file, "r").use { raf ->
+            raf.seek(start)
+            val toRead = (length - start).toInt().coerceAtLeast(0)
+            val buf = ByteArray(toRead)
+            raf.readFully(buf)
+            String(buf, Charsets.UTF_8)
+        }
+        val allLines = raw.lineSequence()
+            .let { seq -> if (start > 0L) seq.drop(1) else seq }
+            .filter { it.isNotBlank() }
+            .toList()
+        return if (allLines.size <= maxLines) allLines else allLines.takeLast(maxLines)
     }
 
     companion object {

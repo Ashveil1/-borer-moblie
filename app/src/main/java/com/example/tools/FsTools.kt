@@ -9,6 +9,8 @@ import kotlinx.serialization.json.intOrNull
 import java.io.File
 
 private const val MAX_READ_BYTES = 2 * 1024 * 1024
+private val SKIP_WALK_DIRS = setOf(".git", "node_modules", ".gradle", "build", ".idea", "__pycache__", ".venv", "venv")
+private val BINARY_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp", "gif", "so", "jar", "apk", "dex", "zip", "gz", "tar", "pdf", "bin", "db", "sqlite", "woff", "woff2", "ttf")
 
 private fun resolveSafePath(ctx: ToolContext, path: String): File {
     val candidate = File(path)
@@ -67,6 +69,7 @@ val writeTool = object : Tool {
         if (rawPath.isBlank()) return ToolResult("error: path is required", isError = true)
         val file = resolveSafePath(ctx, rawPath)
         if (file.isDirectory) return ToolResult("error: ${file.path} is a directory", isError = true)
+        ctx.checkpoints?.capturePreImage(ctx.currentTurnProvider(), file, "write")
         file.parentFile?.mkdirs()
         file.writeText(args["content"].asStr().orEmpty())
         return ToolResult("wrote ${file.path} (${file.length()} bytes)")
@@ -102,6 +105,7 @@ val editTool = object : Tool {
             return ToolResult("error: old_text appears $count times; add more context or pass all=true", isError = true)
         }
         val after = if (replaceAll) before.replace(oldText, newText) else before.replaceFirst(oldText, newText)
+        ctx.checkpoints?.capturePreImage(ctx.currentTurnProvider(), file, "edit")
         file.writeText(after)
         return ToolResult("edited ${file.path} ($count replacement${if (count == 1) "" else "s"})")
     }
@@ -163,7 +167,8 @@ val globTool = object : Tool {
         val limit = (args["limit"].asInt() ?: 200).coerceAtLeast(1)
         val re = globToRegex(pattern)
         val files = root.walkTopDown()
-            .filter { it.isFile && re.matches(it.relativeTo(root).path.replace(File.separatorChar, '/')) }
+            .onEnter { dir -> !ctx.isCancelled() && dir.name !in SKIP_WALK_DIRS }
+            .filter { !ctx.isCancelled() && it.isFile && re.matches(it.relativeTo(root).path.replace(File.separatorChar, '/')) }
             .sortedByDescending { it.lastModified() }
             .take(limit)
             .map { it.path }
@@ -202,12 +207,13 @@ val grepTool = object : Tool {
         val hits = mutableListOf<String>()
 
         fun scan(f: File) {
-            if (hits.size >= limit || !f.isFile || f.length() > MAX_READ_BYTES) return
+            if (ctx.isCancelled() || hits.size >= limit || !f.isFile || f.length() > MAX_READ_BYTES) return
+            if (f.extension.lowercase() in BINARY_EXTENSIONS) return
             val text = runCatching { f.readText() }.getOrNull() ?: return
             if (text.contains('\u0000')) return
             val lines = text.split('\n')
             for (i in lines.indices) {
-                if (hits.size >= limit) break
+                if (hits.size >= limit || ctx.isCancelled()) break
                 if (!regex.containsMatchIn(lines[i])) continue
                 val from = (i - contextLines).coerceAtLeast(0)
                 val to = (i + contextLines).coerceAtMost(lines.lastIndex)
@@ -217,8 +223,14 @@ val grepTool = object : Tool {
             }
         }
 
-        if (target.isFile) scan(target)
-        else target.walkTopDown().filter { it.isFile && (fileGlob == null || fileGlob.matches(it.name)) }.forEach(::scan)
+        if (target.isFile) {
+            scan(target)
+        } else {
+            target.walkTopDown()
+                .onEnter { dir -> !ctx.isCancelled() && dir.name !in SKIP_WALK_DIRS }
+                .filter { !ctx.isCancelled() && hits.size < limit && it.isFile && (fileGlob == null || fileGlob.matches(it.name)) }
+                .forEach(::scan)
+        }
 
         if (hits.isEmpty()) return ToolResult("no matches for /$pattern/ in ${target.path}")
         val (spilled, artId) = spill(ctx, hits.joinToString("\n"), "grep", pattern)

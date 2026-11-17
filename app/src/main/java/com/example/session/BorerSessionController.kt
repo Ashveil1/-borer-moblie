@@ -2,19 +2,24 @@ package com.example.session
 
 import android.content.Context
 import com.example.BorerApplication
+import com.example.data.AgentProfile
 import com.example.data.AppConfig
 import com.example.data.ArtifactEntity
 import com.example.data.ArtifactStore
 import com.example.data.BorerSettings
+import com.example.data.CheckpointManager
 import com.example.data.ConfigLoader
 import com.example.data.ContextSource
 import com.example.data.EventLog
 import com.example.data.EventRecord
+import com.example.data.ExecutionMode
+import com.example.data.FileDiffItem
 import com.example.data.FindingEntity
 import com.example.data.HttpLogRecord
 import com.example.data.JobEntity
 import com.example.data.LearningMemory
 import com.example.data.LearningStats
+import com.example.data.McpServerConfig
 import com.example.data.NoteEntity
 import com.example.data.NoteKind
 import com.example.data.NotifyConfig
@@ -23,8 +28,13 @@ import com.example.data.RunStore
 import com.example.data.SessionEntity
 import com.example.data.SessionFiles
 import com.example.data.ShellBackend
+import com.example.data.defaultWhsearchMcpServer
+import com.example.mcp.McpConnectionStatus
+import com.example.mcp.McpManager
+import com.example.mcp.McpServerState
 import com.example.provider.ChatMessage
 import com.example.provider.FallbackClient
+import com.example.provider.ModelCatalogEntry
 import com.example.provider.OpenAICompatClient
 import com.example.provider.ToolCallRequest
 import com.example.provider.Usage
@@ -40,6 +50,8 @@ import com.example.tools.Cvss31Calculator
 import com.example.tools.SkillStore
 import com.example.tools.ToolContext
 import com.example.tools.ToolRegistry
+import com.example.tools.ToolResult
+import com.example.tools.applyPatchTool
 import com.example.tools.bashTool
 import com.example.tools.diffTool
 import com.example.tools.fsTools
@@ -49,23 +61,32 @@ import com.example.tools.learningTool
 import com.example.tools.metaTools
 import com.example.tools.mutateTool
 import com.example.tools.netTool
+import com.example.tools.proposePlanTool
 import com.example.tools.reportTool
 import com.example.tools.sessionTool
 import com.example.tools.skillTool
+import com.example.tools.taskTool
 import com.example.tools.transformTool
 import com.example.tools.verifyTool
+import com.example.tools.webFetchTool
+import com.example.tools.webSearchTool
+import com.example.ui.ApprovalDecision
 import com.example.ui.ConsoleUiState
 import com.example.ui.HuntItemStatus
 import com.example.ui.HuntQueueItem
+import com.example.ui.MentionSuggestion
+import com.example.ui.PendingToolApproval
 import com.example.ui.RunMode
 import com.example.ui.TranscriptEntry
 import com.example.ui.screens.ToolSummaryFormatter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -74,12 +95,18 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BorerSessionController(
@@ -93,6 +120,7 @@ class BorerSessionController(
 
     private val prefs = app.getSharedPreferences("borer_settings", Context.MODE_PRIVATE)
     private val cfgJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val sessionMutex = Mutex()
 
     private val _settings = MutableStateFlow(loadPersistedSettings())
     val settings: StateFlow<BorerSettings> = _settings.asStateFlow()
@@ -122,7 +150,11 @@ class BorerSessionController(
     val notifyTestResult: StateFlow<String?> = _notifyTestResult.asStateFlow()
 
     private val _console = MutableStateFlow(
-        ConsoleUiState(mode = if (_settings.value.defaultAutonomous) RunMode.AUTONOMOUS else RunMode.CHAT)
+        ConsoleUiState(
+            mode = _settings.value.resolvedExecutionMode.toRunMode(),
+            agentsMdLoaded = findWorkspaceAgentsFile(workspaceDir) != null,
+            agentProfile = _settings.value.agentProfile
+        )
     )
     val console: StateFlow<ConsoleUiState> = _console.asStateFlow()
 
@@ -172,14 +204,38 @@ class BorerSessionController(
     private lateinit var log: EventLog
     private lateinit var artifactStore: ArtifactStore
     private lateinit var store: RunStore
+    private lateinit var checkpointManager: CheckpointManager
     private lateinit var toolRegistry: ToolRegistry
     private lateinit var toolCtx: ToolContext
     private var agentSession: AgentSession? = null
     private var sessionInitJob: Job? = null
     private var activeRunJob: Job? = null
     private var huntJob: Job? = null
+    @Volatile
     private var stopFlag = false
     private var observersJob: Job? = null
+
+    // Coalesced stream buffers
+    private val streamLock = Any()
+    private val pendingText = StringBuilder()
+    private val pendingReasoning = StringBuilder()
+    private var streamFlushJob: Job? = null
+
+    // Supervised tool approvals
+    private val sessionAllowedTools = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var allowAllToolsSession = false
+    @Volatile
+    private var pendingApprovalDeferred: CompletableDeferred<ApprovalDecision>? = null
+
+    val mcpManager = McpManager(app, workspaceDir)
+    val mcpStates: StateFlow<List<McpServerState>> = mcpManager.states
+
+    private val _mcpInstallingId = MutableStateFlow<String?>(null)
+    val mcpInstallingId: StateFlow<String?> = _mcpInstallingId.asStateFlow()
+
+    private val _mcpInstallLog = MutableStateFlow<String?>(null)
+    val mcpInstallLog: StateFlow<String?> = _mcpInstallLog.asStateFlow()
 
     init {
         BackgroundKeepAliveController.onStopRun = {
@@ -188,12 +244,28 @@ class BorerSessionController(
         BackgroundKeepAliveController.onReleaseWakeLock = {
             setPersistentWakeLock(false)
         }
+        mcpManager.onToolsChanged = {
+            toolRegistry = buildToolRegistry(_skills.value, _settings.value)
+        }
         scope.launch(Dispatchers.IO) {
             runCatching { runDb.sessionDao().deleteEmptySessions() }
         }
         startNewSession()
         detectCatalogContextWindows()
         syncBackgroundKeepAlive()
+        syncMcpServersAsync()
+    }
+
+    private fun RunMode.toExecutionMode(): ExecutionMode = when (this) {
+        RunMode.PLAN -> ExecutionMode.PLAN
+        RunMode.CHAT -> ExecutionMode.SUPERVISED
+        RunMode.AUTONOMOUS -> ExecutionMode.AUTONOMOUS
+    }
+
+    private fun ExecutionMode.toRunMode(): RunMode = when (this) {
+        ExecutionMode.PLAN -> RunMode.PLAN
+        ExecutionMode.SUPERVISED -> RunMode.CHAT
+        ExecutionMode.AUTONOMOUS -> RunMode.AUTONOMOUS
     }
 
     private fun syncBackgroundKeepAlive() {
@@ -211,7 +283,11 @@ class BorerSessionController(
                 persistentWakeLock = s.persistentWakeLock,
                 busy = c.busy,
                 huntRunning = _huntRunning.value,
-                modeLabel = if (c.mode == RunMode.AUTONOMOUS) "Autonomous" else "Chat",
+                modeLabel = when (c.mode) {
+                    RunMode.PLAN -> "Plan"
+                    RunMode.CHAT -> "Chat"
+                    RunMode.AUTONOMOUS -> "Autonomous"
+                },
                 activeModel = c.activeModel,
                 turn = c.turn,
                 activeToolLabel = toolLabel
@@ -255,6 +331,10 @@ class BorerSessionController(
         syncBackgroundKeepAlive()
     }
 
+    fun setAgentProfile(profile: AgentProfile) {
+        updateSettings { it.copy(agentProfile = profile) }
+    }
+
     fun setPersistentWakeLock(enabled: Boolean) {
         updateSettings { it.copy(persistentWakeLock = enabled) }
     }
@@ -266,6 +346,11 @@ class BorerSessionController(
     ) {
         if (_console.value.busy) return
         sessionInitJob?.cancel()
+        flushPendingStreams()
+        pendingApprovalDeferred?.cancel()
+        pendingApprovalDeferred = null
+        sessionAllowedTools.clear()
+        allowAllToolsSession = false
 
         val cfg = _config.value
         val profile = cfg.providers.firstOrNull()
@@ -279,136 +364,334 @@ class BorerSessionController(
             runId = runId,
             mode = _console.value.mode,
             busy = false,
+            isStreaming = false,
             stopRequested = false,
             contextWindow = window,
             contextSource = profile?.contextSource?.name?.lowercase() ?: "fallback",
             activeModel = profile?.model ?: "unconfigured",
             providerConfigured = cfg.providers.isNotEmpty(),
             entries = restoredEntries,
-            learningStats = _console.value.learningStats
+            learningStats = _console.value.learningStats,
+            agentsMdLoaded = findWorkspaceAgentsFile(workspaceDir) != null,
+            agentProfile = _settings.value.agentProfile
         )
         syncBackgroundKeepAlive()
 
         sessionInitJob = scope.launch(Dispatchers.IO) {
-            val runDir = File(runsDir, runId).apply { mkdirs() }
-            childProxy?.close()
-            gate = EngagementGate()
-            log = EventLog(runDir)
-            val proxy = ChildProxyServer(gate, log).also { childProxy = it }
-            val proxyUrl = proxy.start()
-            artifactStore = ArtifactStore(runDir)
-            store = RunStore(runId, runDb)
+            sessionMutex.withLock {
+                try {
+                    val runDir = File(runsDir, runId).apply { mkdirs() }
+                    runCatching { childProxy?.close() }
+                    gate = EngagementGate()
+                    log = EventLog(runDir)
+                    val proxy = ChildProxyServer(gate, log).also { childProxy = it }
+                    val proxyUrl = runCatching { proxy.start() }.getOrNull()
+                    artifactStore = ArtifactStore(runDir)
+                    store = RunStore(runId, runDb)
+                    checkpointManager = CheckpointManager(runId, runDir, workspaceDir, runDb)
 
-            val currentCfg = _config.value
-            val currentProfile = currentCfg.providers.firstOrNull()
-            val jobsRegistry = BackgroundJobs(
-                appContext = app,
-                settingsProvider = { _settings.value },
-                runId = runId,
-                runDir = runDir,
-                db = runDb,
-                log = log,
-                workdir = workspaceDir,
-                scope = scope,
-                proxyUrl = proxyUrl
-            )
-
-            toolCtx = ToolContext(
-                runDir = runDir,
-                workdir = workspaceDir,
-                gate = gate,
-                log = log,
-                artifacts = artifactStore,
-                store = store,
-                db = runDb,
-                settingsProvider = { _settings.value },
-                isCancelled = { stopFlag },
-                notify = { text -> log.append("notify", mapOf("text" to text)) },
-                jobs = jobsRegistry,
-                proxyUrl = proxyUrl,
-                shellExecutor = { command, cwd, env, timeoutMs, stdin ->
-                    UbuntuProotRuntime.exec(app, command, cwd, env, timeoutMs, stdin, _settings.value)
-                }
-            )
-
-            val currentSkills = _skills.value
-            toolRegistry = ToolRegistry(
-                fsTools + listOf(
-                    bashTool, jobTool, sessionTool, httpTool, netTool,
-                    transformTool, diffTool, mutateTool, verifyTool, reportTool,
-                    learningTool(memory)
-                ) + metaTools + (if (currentSkills.isNotEmpty()) listOf(skillTool(currentSkills)) else emptyList())
-            )
-
-            val fallbackClient = FallbackClient(currentCfg.providers, log) { attempt, delayMs, reason ->
-                appendInfo("retry $attempt in ${delayMs}ms: $reason")
-            }
-
-            val stats = memory.stats()
-            val extra = listOfNotNull(
-                SkillStore.skillIndex(currentSkills).takeIf { it.isNotBlank() },
-                buildMemoryBrief(taskHint).takeIf { it.isNotBlank() }
-            ).joinToString("\n\n").ifBlank { null }
-
-            val session = AgentSession(
-                SessionDeps(
-                    profile = currentProfile,
-                    client = fallbackClient,
-                    contextWindow = fallbackClient.contextWindow,
-                    tools = toolRegistry,
-                    ctx = toolCtx,
-                    settingsProvider = { _settings.value },
-                    log = log,
-                    extraInstructions = extra,
-                    ui = makeUiHooks(),
-                    shouldStop = { stopFlag },
-                    initialMessages = initialMessages
-                )
-            )
-            agentSession = session
-
-            log.append(
-                "run.start",
-                mapOf(
-                    "model" to (currentProfile?.model ?: "unconfigured"),
-                    "baseUrl" to (currentProfile?.baseUrl ?: ""),
-                    "contextWindow" to fallbackClient.contextWindow,
-                    "task" to taskHint.orEmpty(),
-                    "runDir" to runDir.absolutePath
-                )
-            )
-
-            if (initialMessages.isNotEmpty() && runDb.sessionDao().getSession(runId) == null) {
-                val now = Instant.now().toString()
-                runDb.sessionDao().upsert(
-                    SessionEntity(
-                        id = runId,
-                        title = initialMessages.firstOrNull { it.role == "user" }?.content?.take(80) ?: "(session)",
-                        model = currentProfile?.model ?: "unconfigured",
-                        baseUrl = currentProfile?.baseUrl ?: "",
-                        contextWindow = fallbackClient.contextWindow,
-                        turns = initialMessages.count { it.role == "assistant" },
-                        messageCount = initialMessages.size,
-                        createdAt = now,
-                        updatedAt = now
+                    val currentCfg = _config.value
+                    val currentProfile = currentCfg.providers.firstOrNull()
+                    val jobsRegistry = BackgroundJobs(
+                        appContext = app,
+                        settingsProvider = { _settings.value },
+                        runId = runId,
+                        runDir = runDir,
+                        db = runDb,
+                        log = log,
+                        workdir = workspaceDir,
+                        scope = scope,
+                        proxyUrl = proxyUrl
                     )
-                )
-            }
 
-            withContext(Dispatchers.Main) {
-                _console.update {
-                    it.copy(
-                        contextWindow = fallbackClient.contextWindow,
-                        contextSource = currentProfile?.contextSource?.name?.lowercase() ?: "fallback",
-                        activeModel = currentProfile?.model ?: "unconfigured",
-                        providerConfigured = currentCfg.providers.isNotEmpty(),
-                        learningStats = stats
+                    val subagentRunner: suspend (String, String, Int) -> ToolResult = { role, prompt, maxTurns ->
+                        executeSubagent(role, prompt, maxTurns)
+                    }
+
+                    toolCtx = ToolContext(
+                        runDir = runDir,
+                        workdir = workspaceDir,
+                        gate = gate,
+                        log = log,
+                        artifacts = artifactStore,
+                        store = store,
+                        db = runDb,
+                        settingsProvider = { _settings.value },
+                        isCancelled = { stopFlag },
+                        notify = { text -> log.append("notify", mapOf("text" to text)) },
+                        jobs = jobsRegistry,
+                        proxyUrl = proxyUrl,
+                        checkpoints = checkpointManager,
+                        onPlanProposal = { title, summary, steps ->
+                            appendEntry(
+                                TranscriptEntry.PlanProposal(
+                                    id = UUID.randomUUID().toString(),
+                                    title = title,
+                                    summary = summary,
+                                    steps = steps
+                                )
+                            )
+                        },
+                        subagentRunner = subagentRunner,
+                        shellExecutor = { command, cwd, env, timeoutMs, stdin ->
+                            UbuntuProotRuntime.exec(app, command, cwd, env, timeoutMs, stdin, _settings.value)
+                        },
+                        mcpManager = mcpManager
                     )
+
+                    val currentSkills = _skills.value
+                    toolRegistry = buildToolRegistry(currentSkills, _settings.value)
+
+                    val fallbackClient = FallbackClient(currentCfg.providers, log) { attempt, delayMs, reason ->
+                        appendInfo("retry $attempt in ${delayMs}ms: $reason")
+                    }
+
+                    val stats = runCatching { memory.stats() }.getOrDefault(LearningStats(0, 0, 0, 0))
+                    val extra = listOfNotNull(
+                        SkillStore.skillIndex(currentSkills).takeIf { it.isNotBlank() },
+                        buildMemoryBrief(taskHint).takeIf { it.isNotBlank() }
+                    ).joinToString("\n\n").ifBlank { null }
+
+                    val session = AgentSession(
+                        SessionDeps(
+                            profile = currentProfile,
+                            client = fallbackClient,
+                            contextWindow = fallbackClient.contextWindow,
+                            tools = toolRegistry,
+                            ctx = toolCtx,
+                            settingsProvider = { _settings.value },
+                            log = log,
+                            extraInstructions = extra,
+                            ui = makeUiHooks(),
+                            shouldStop = { stopFlag },
+                            initialMessages = initialMessages,
+                            executionMode = { _console.value.mode.toExecutionMode() },
+                            approvalGate = { call -> requestUserApproval(call) },
+                            toolsProvider = { buildToolRegistry(_skills.value, _settings.value) }
+                        )
+                    )
+                    agentSession = session
+
+                    log.append(
+                        "run.start",
+                        mapOf(
+                            "model" to (currentProfile?.model ?: "unconfigured"),
+                            "baseUrl" to (currentProfile?.baseUrl ?: ""),
+                            "contextWindow" to fallbackClient.contextWindow,
+                            "task" to taskHint.orEmpty(),
+                            "runDir" to runDir.absolutePath
+                        )
+                    )
+
+                    if (initialMessages.isNotEmpty() && runDb.sessionDao().getSession(runId) == null) {
+                        val now = Instant.now().toString()
+                        runDb.sessionDao().upsert(
+                            SessionEntity(
+                                id = runId,
+                                title = initialMessages.firstOrNull { it.role == "user" }?.content?.take(80) ?: "(session)",
+                                model = currentProfile?.model ?: "unconfigured",
+                                baseUrl = currentProfile?.baseUrl ?: "",
+                                contextWindow = fallbackClient.contextWindow,
+                                turns = initialMessages.count { it.role == "assistant" },
+                                messageCount = initialMessages.size,
+                                createdAt = now,
+                                updatedAt = now
+                            )
+                        )
+                    }
+
+                    val diffs = checkpointManager.sessionDiffs()
+                    withContext(Dispatchers.Main) {
+                        _console.update {
+                            it.copy(
+                                contextWindow = fallbackClient.contextWindow,
+                                contextSource = currentProfile?.contextSource?.name?.lowercase() ?: "fallback",
+                                activeModel = currentProfile?.model ?: "unconfigured",
+                                providerConfigured = currentCfg.providers.isNotEmpty(),
+                                learningStats = stats,
+                                changedFilesCount = diffs.size,
+                                checkpointCount = checkpointManager.latestTurn() ?: 0,
+                                agentsMdLoaded = findWorkspaceAgentsFile(workspaceDir) != null,
+                                agentProfile = _settings.value.agentProfile
+                            )
+                        }
+                        observeLogStreams()
+                        syncBackgroundKeepAlive()
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    appendInfo("Session init error: ${t.message ?: t::class.simpleName}", isWarn = true)
                 }
-                observeLogStreams()
-                syncBackgroundKeepAlive()
             }
         }
+    }
+
+    private fun buildToolRegistry(skillsList: List<BorerSkill>, s: BorerSettings): ToolRegistry {
+        val ts = s.toolsets
+        val selected = buildList {
+            if (ts.filesystem) {
+                addAll(fsTools)
+                add(applyPatchTool)
+                add(diffTool)
+            }
+            if (ts.shell) {
+                add(bashTool)
+                add(jobTool)
+            }
+            if (ts.network) {
+                add(webSearchTool)
+                add(webFetchTool)
+                add(httpTool)
+                add(netTool)
+                add(verifyTool)
+                add(mutateTool)
+            }
+            if (ts.subagent) {
+                add(taskTool)
+            }
+            if (ts.memory) {
+                add(learningTool(memory))
+            }
+            add(sessionTool)
+            add(transformTool)
+            add(reportTool)
+            add(proposePlanTool)
+            addAll(metaTools)
+            if (skillsList.isNotEmpty()) {
+                add(skillTool(skillsList))
+            }
+            if (ts.mcp) {
+                addAll(mcpManager.buildBuiltinMetaTools())
+                val seen = map { it.name }.toMutableSet()
+                mcpManager.buildDynamicTools().forEach { t ->
+                    if (seen.add(t.name)) add(t)
+                }
+            }
+        }
+        return ToolRegistry(selected)
+    }
+
+    private suspend fun executeSubagent(role: String, prompt: String, maxTurns: Int): ToolResult {
+        val currentCfg = _config.value
+        val currentProfile = currentCfg.providers.firstOrNull()
+        val scopedTools = when (role) {
+            "explore" -> toolRegistry.filtered { AgentSession.isPlanAllowedTool(it) && it != "propose_plan" }
+            else -> toolRegistry.filtered { it != "task" && it != "propose_plan" }
+        }
+        val childCtx = ToolContext(
+            runDir = toolCtx.runDir,
+            workdir = toolCtx.workdir,
+            gate = gate,
+            log = log,
+            artifacts = artifactStore,
+            store = store,
+            db = runDb,
+            settingsProvider = { _settings.value },
+            isCancelled = { stopFlag },
+            notify = { text -> log.append("subagent.notify", mapOf("role" to role, "text" to text)) },
+            jobs = toolCtx.jobs,
+            proxyUrl = toolCtx.proxyUrl,
+            checkpoints = checkpointManager,
+            currentTurnProvider = toolCtx.currentTurnProvider,
+            isSubagent = true,
+            shellExecutor = toolCtx.shellExecutor,
+            mcpManager = mcpManager
+        )
+        val childClient = FallbackClient(currentCfg.providers, log)
+        val childSession = AgentSession(
+            SessionDeps(
+                profile = currentProfile,
+                client = childClient,
+                contextWindow = childClient.contextWindow,
+                tools = scopedTools,
+                ctx = childCtx,
+                settingsProvider = { _settings.value },
+                log = log,
+                extraInstructions = "You are a scoped '$role' subagent. Return a concise, evidence-backed summary with file paths, artifact IDs, and key results.",
+                shouldStop = { stopFlag },
+                executionMode = {
+                    if (role == "explore") ExecutionMode.PLAN else ExecutionMode.AUTONOMOUS
+                }
+            )
+        )
+        _console.update { it.copy(subagentActiveLabel = "Subagent ($role)") }
+        log.append("subagent.start", mapOf("role" to role, "maxTurns" to maxTurns, "prompt" to prompt.take(400)))
+        return try {
+            val res = childSession.run(prompt, maxTurns = maxTurns)
+            val finalAssistant = res.messages.lastOrNull { it.role == "assistant" }?.content.orEmpty()
+            val report = res.summary.ifBlank { finalAssistant }.ifBlank { "(subagent finished with empty response)" }
+            log.append("subagent.end", mapOf("role" to role, "turns" to res.turns, "tokens" to res.usage.totalTokens))
+            ToolResult(
+                "[subagent:$role turns=${res.turns} tokens=${res.usage.totalTokens} outcome=${res.outcome}]\n$report"
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            ToolResult("error: subagent($role) failed: ${t.message ?: t::class.simpleName}", isError = true)
+        } finally {
+            _console.update { it.copy(subagentActiveLabel = null) }
+        }
+    }
+
+    private suspend fun requestUserApproval(call: ToolCallRequest): ApprovalDecision {
+        if (allowAllToolsSession || sessionAllowedTools.contains(call.name)) {
+            return ApprovalDecision.AllowOnce
+        }
+        val summary = ToolSummaryFormatter.summarize(call.name, call.arguments)
+        val riskReason = when (call.name) {
+            "bash", "job" -> "Executes shell command on runtime"
+            "write", "edit", "apply_patch" -> "Modifies workspace file(s)"
+            "http", "net", "verify" -> "Performs outbound network request"
+            else -> "Requires operator approval"
+        }
+        val deferred = CompletableDeferred<ApprovalDecision>()
+        pendingApprovalDeferred = deferred
+        _console.update {
+            it.copy(
+                pendingApproval = PendingToolApproval(
+                    callId = call.id,
+                    toolName = call.name,
+                    summary = summary.ifBlank { call.name },
+                    argumentsPreview = call.arguments.take(500),
+                    riskReason = riskReason
+                )
+            )
+        }
+        syncBackgroundKeepAlive()
+        return try {
+            val decision = deferred.await()
+            when (decision) {
+                is ApprovalDecision.AllowToolSession -> sessionAllowedTools.add(call.name)
+                is ApprovalDecision.AllowAllSession -> allowAllToolsSession = true
+                else -> Unit
+            }
+            decision
+        } catch (_: CancellationException) {
+            ApprovalDecision.Deny("Cancelled by operator")
+        } finally {
+            if (pendingApprovalDeferred === deferred) pendingApprovalDeferred = null
+            _console.update { it.copy(pendingApproval = null) }
+            syncBackgroundKeepAlive()
+        }
+    }
+
+    fun resolveToolApproval(decision: ApprovalDecision) {
+        val deferred = pendingApprovalDeferred
+        _console.update { it.copy(pendingApproval = null) }
+        deferred?.complete(decision)
+    }
+
+    fun approvePlan(entryId: String, targetMode: RunMode) {
+        _console.update { cur ->
+            cur.copy(
+                entries = cur.entries.map {
+                    if (it is TranscriptEntry.PlanProposal && it.id == entryId) it.copy(approved = true) else it
+                }
+            )
+        }
+        setRunMode(targetMode)
+        submitPrompt("Plan approved. Proceed with execution.")
     }
 
     private fun observeLogStreams() {
@@ -428,18 +711,108 @@ class BorerSessionController(
 
         when {
             text == "/help" -> {
-                appendInfo("commands: /usage · /mode · /stop · /clear · /help — type any prompt to run or queue")
+                appendInfo("commands: /plan · /mode [plan|chat|auto] · /persona [general|code|research|security] · /mcp [refresh|connect <id>] · /compact · /diff · /undo · /status · /usage · /stop · /clear · /help")
+                return
+            }
+            text == "/mcp" || text.startsWith("/mcp ") -> {
+                val arg = text.removePrefix("/mcp").trim()
+                when {
+                    arg.equals("refresh", ignoreCase = true) || arg.equals("sync", ignoreCase = true) -> {
+                        refreshAllMcpServers()
+                        appendInfo("refreshing MCP servers...")
+                    }
+                    arg.startsWith("connect ", ignoreCase = true) -> {
+                        val id = arg.removePrefix("connect").trim()
+                        connectMcpServer(id)
+                        appendInfo("connecting MCP server '$id'...")
+                    }
+                    arg.startsWith("disconnect ", ignoreCase = true) -> {
+                        val id = arg.removePrefix("disconnect").trim()
+                        disconnectMcpServer(id)
+                        appendInfo("disconnected MCP server '$id'")
+                    }
+                    else -> {
+                        val states = mcpStates.value
+                        if (states.isEmpty()) {
+                            appendInfo("no MCP servers configured (add in Settings -> MCP)")
+                        } else {
+                            val summary = states.joinToString(" | ") { st ->
+                                "${st.config.id}:${st.status.label}(${st.tools.size}t/${st.resources.size}r/${st.prompts.size}p)"
+                            }
+                            appendInfo("MCP: $summary")
+                        }
+                    }
+                }
                 return
             }
             text == "/usage" -> {
                 val c = _console.value
-                appendInfo("context ${c.contextTokens}/${c.contextWindow} tokens · total prompt=${c.totals.promptTokens} completion=${c.totals.completionTokens}")
+                appendInfo(
+                    "context ${c.contextTokens}/${c.contextWindow} tokens · prompt=${c.totals.promptTokens} (cached=${c.totals.cachedTokens}) completion=${c.totals.completionTokens}"
+                )
                 return
             }
-            text == "/mode" -> {
-                val next = if (_console.value.mode == RunMode.CHAT) RunMode.AUTONOMOUS else RunMode.CHAT
+            text == "/status" -> {
+                val c = _console.value
+                val s = _settings.value
+                val mcpConnected = mcpStates.value.count { it.status == McpConnectionStatus.CONNECTED }
+                appendInfo(
+                    "run=${c.runId} · persona=${c.agentProfile.label} · mode=${c.mode.name} · backend=${s.shellBackend.wire} · mcp=$mcpConnected/${s.mcpServers.size} · checkpoints=${c.checkpointCount} (${c.changedFilesCount} files)"
+                )
+                return
+            }
+            text == "/persona" || text.startsWith("/persona ") || text == "/agent" || text.startsWith("/agent ") -> {
+                val arg = text.removePrefix("/persona").removePrefix("/agent").trim().lowercase()
+                val next = when (arg) {
+                    "" -> {
+                        val all = AgentProfile.entries
+                        all[(all.indexOf(_settings.value.agentProfile) + 1) % all.size]
+                    }
+                    "general", "assistant", "chat" -> AgentProfile.GENERAL
+                    "code", "coding", "dev" -> AgentProfile.CODING
+                    "research", "web" -> AgentProfile.RESEARCH
+                    "sec", "security", "pentest" -> AgentProfile.SECURITY
+                    else -> {
+                        appendInfo("unknown persona '$arg' (use general, code, research, or security)", isWarn = true)
+                        return
+                    }
+                }
+                setAgentProfile(next)
+                appendInfo("persona switched to ${next.label}")
+                return
+            }
+            text == "/plan" -> {
+                setRunMode(RunMode.PLAN)
+                appendInfo("mode switched to Plan (read-only)")
+                return
+            }
+            text == "/mode" || text.startsWith("/mode ") -> {
+                val arg = text.removePrefix("/mode").trim().lowercase()
+                val next = when (arg) {
+                    "" -> if (_console.value.mode == RunMode.CHAT) RunMode.AUTONOMOUS else RunMode.CHAT
+                    "plan" -> RunMode.PLAN
+                    "chat", "ask", "supervised" -> RunMode.CHAT
+                    "auto", "autonomous" -> RunMode.AUTONOMOUS
+                    else -> {
+                        appendInfo("unknown mode '$arg' (use plan, chat, or auto)", isWarn = true)
+                        return
+                    }
+                }
                 setRunMode(next)
-                appendInfo("mode switched to ${if (next == RunMode.AUTONOMOUS) "Autonomous" else "Chat"}")
+                val label = when (next) {
+                    RunMode.PLAN -> "Plan"
+                    RunMode.CHAT -> "Chat"
+                    RunMode.AUTONOMOUS -> "Autonomous"
+                }
+                appendInfo("mode switched to $label")
+                return
+            }
+            text == "/compact" -> {
+                compactContextNow()
+                return
+            }
+            text == "/undo" -> {
+                undoLastTurn()
                 return
             }
             text == "/stop" -> {
@@ -460,6 +833,122 @@ class BorerSessionController(
         }
 
         executePrompt(text, echoUser = true)
+    }
+
+    fun compactContextNow() {
+        if (_console.value.busy) {
+            appendInfo("cannot compact while turn is running", isWarn = true)
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            sessionInitJob?.join()
+            val session = agentSession ?: return@launch
+            val res = session.compactNow(force = true)
+            if (res.compacted) {
+                SessionFiles.saveMessages(toolCtx.runDir, session.messages.filter { it.role != "system" })
+            } else {
+                appendInfo("nothing to compact yet (${res.remainingMessages} messages)")
+            }
+        }
+    }
+
+    fun undoLastTurn() {
+        if (_console.value.busy) {
+            appendInfo("cannot undo while turn is running", isWarn = true)
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            sessionInitJob?.join()
+            if (!::checkpointManager.isInitialized) return@launch
+            val res = checkpointManager.undoLastTurn()
+            val diffs = checkpointManager.sessionDiffs()
+            _console.update {
+                it.copy(
+                    changedFilesCount = diffs.size,
+                    checkpointCount = checkpointManager.latestTurn() ?: 0
+                )
+            }
+            if (res.ok) {
+                log.append("checkpoint.undo", mapOf("turn" to res.turn, "files" to res.restoredFiles.joinToString(",")))
+            }
+            appendInfo(res.message, isWarn = !res.ok)
+        }
+    }
+
+    suspend fun getSessionDiffs(): List<FileDiffItem> = withContext(Dispatchers.IO) {
+        sessionInitJob?.join()
+        if (!::checkpointManager.isInitialized) emptyList() else checkpointManager.sessionDiffs()
+    }
+
+    suspend fun getMentionSuggestions(query: String): List<MentionSuggestion> = withContext(Dispatchers.IO) {
+        val q = query.trim().lowercase()
+        val out = mutableListOf<MentionSuggestion>()
+
+        val skipDirs = setOf(".git", "node_modules", ".gradle", "build")
+        workspaceDir.walkTopDown()
+            .onEnter { it.name !in skipDirs }
+            .filter { it.isFile }
+            .take(60)
+            .forEach { file ->
+                val rel = file.relativeTo(workspaceDir).path.replace(File.separatorChar, '/')
+                if (q.isBlank() || rel.lowercase().contains(q)) {
+                    out.add(MentionSuggestion("@file:$rel", rel, "${file.length()}b", "file"))
+                }
+            }
+
+        if (::artifactStore.isInitialized) {
+            runDb.artifactDao().listArtifactsSync(_console.value.runId).takeLast(12).forEach { art ->
+                if (q.isBlank() || art.id.lowercase().contains(q) || art.label.lowercase().contains(q)) {
+                    out.add(MentionSuggestion("@artifact:${art.id}", "${art.id} · ${art.label.take(28)}", "${art.lines} lines", "artifact"))
+                }
+            }
+        }
+
+        if (::store.isInitialized) {
+            store.queryNotes(limit = 15).forEach { note ->
+                if (q.isBlank() || note.key.lowercase().contains(q) || note.kind.wire.contains(q)) {
+                    out.add(MentionSuggestion("@note:${note.id}", "#${note.id} [${note.kind.wire}] ${note.key}", note.body.take(40), "note"))
+                }
+            }
+        }
+        out.take(15)
+    }
+
+    private fun resolveMentionContext(userText: String): String {
+        val regex = Regex("@(file|artifact|note):([^\\s]+)")
+        val matches = regex.findAll(userText).take(4).toList()
+        if (matches.isEmpty()) return userText
+
+        val sections = mutableListOf<String>()
+        for (m in matches) {
+            val type = m.groupValues[1]
+            val ref = m.groupValues[2]
+            when (type) {
+                "file" -> {
+                    val f = File(workspaceDir, ref)
+                    if (f.exists() && f.isFile && f.length() <= 256 * 1024) {
+                        val content = runCatching { f.readText().take(4000) }.getOrNull()
+                        if (content != null) sections.add("<file path=\"$ref\">\n$content\n</file>")
+                    }
+                }
+                "artifact" -> {
+                    if (::artifactStore.isInitialized) {
+                        val slice = artifactStore.slice(ref, 0, 4000)
+                        if (!slice.isNullOrBlank()) sections.add("<artifact id=\"$ref\">\n$slice\n</artifact>")
+                    }
+                }
+                "note" -> {
+                    val id = ref.toLongOrNull()
+                    if (id != null && ::store.isInitialized) {
+                        store.getNote(id)?.let { n ->
+                            sections.add("<note id=\"${n.id}\" kind=\"${n.kind.wire}\" key=\"${n.key}\">\n${n.body.take(3000)}\n</note>")
+                        }
+                    }
+                }
+            }
+        }
+        if (sections.isEmpty()) return userText
+        return "$userText\n\n<attached-context>\n${sections.joinToString("\n")}\n</attached-context>"
     }
 
     private fun executePrompt(text: String, echoUser: Boolean) {
@@ -489,20 +978,31 @@ class BorerSessionController(
                     appendInfo("Session could not initialize.", isWarn = true)
                     return@launch
                 }
-                val maxTurns = if (_console.value.mode == RunMode.AUTONOMOUS) 400 else 60
-                val result = session.run(text, maxTurns = maxTurns)
+                val enrichedText = withContext(Dispatchers.IO) { resolveMentionContext(text) }
+                val mode = _console.value.mode
+                val maxTurns = when (mode) {
+                    RunMode.AUTONOMOUS -> 400
+                    RunMode.PLAN -> 30
+                    RunMode.CHAT -> 60
+                }
+                val result = session.run(enrichedText, maxTurns = maxTurns)
                 runOutcome = result.outcome
                 runSummary = result.summary
                 runTurns = result.turns
-                if (_console.value.mode == RunMode.AUTONOMOUS && result.summary.isNotBlank()) {
+                if (mode == RunMode.AUTONOMOUS && result.summary.isNotBlank()) {
                     withContext(Dispatchers.IO) { SessionFiles.saveSummary(toolCtx.runDir, result.summary) }
                     appendInfo("autonomous run finished (${result.outcome}) in ${result.turns} turns")
                     val findingList = withContext(Dispatchers.IO) { store.listFindings() }
                     val findingLines = findingList.joinToString("\n") { "- ${it.severity} ${it.asset} — ${it.title}" }
+                    val title = if (findingList.isNotEmpty()) {
+                        "borer: ${result.outcome} — ${findingList.size} report(s)"
+                    } else {
+                        "borer: ${result.outcome} (${result.turns} turns)"
+                    }
                     NotifySender.send(
                         _config.value.notify,
-                        "borer: ${result.outcome} — ${findingList.size} finding(s)",
-                        listOf(result.summary.take(2500), "", "run: ${_console.value.runId}", findingLines).joinToString("\n")
+                        title,
+                        listOf(result.summary.take(2500), "", "run: ${_console.value.runId}", findingLines).filter { it.isNotBlank() }.joinToString("\n")
                     )
                 }
             } catch (_: CancellationException) {
@@ -512,16 +1012,20 @@ class BorerSessionController(
                 runOutcome = "error"
                 appendInfo("turn failed: ${t.message ?: t::class.simpleName}", isWarn = true)
             } finally {
+                flushPendingStreams()
+                pendingApprovalDeferred?.cancel()
+                pendingApprovalDeferred = null
                 withContext(NonCancellable) {
                     val hasMessages = agentSession?.messages?.any { it.role == "user" || it.role == "assistant" } == true
                     if (hasMessages) {
                         persistSessionRecord(runOutcome, runSummary, runTurns)
                     }
+                    refreshCheckpointCounts()
                 }
                 if (activeRunJob !== myJob) return@launch
                 activeRunJob = null
                 if (stopFlag || runOutcome == "cancelled") {
-                    _console.update { it.copy(busy = false, stopRequested = false, queuedPrompts = emptyList()) }
+                    _console.update { it.copy(busy = false, isStreaming = false, stopRequested = false, queuedPrompts = emptyList(), pendingApproval = null) }
                     syncBackgroundKeepAlive()
                 } else {
                     var next: String? = null
@@ -529,7 +1033,9 @@ class BorerSessionController(
                         next = cur.queuedPrompts.firstOrNull()
                         cur.copy(
                             busy = false,
+                            isStreaming = false,
                             stopRequested = false,
+                            pendingApproval = null,
                             queuedPrompts = if (next != null) cur.queuedPrompts.drop(1) else emptyList()
                         )
                     }
@@ -543,18 +1049,29 @@ class BorerSessionController(
         }
     }
 
+    private fun refreshCheckpointCounts() {
+        if (!::checkpointManager.isInitialized) return
+        val diffs = runCatching { checkpointManager.sessionDiffs() }.getOrDefault(emptyList())
+        val latest = runCatching { checkpointManager.latestTurn() ?: 0 }.getOrDefault(0)
+        _console.update { it.copy(changedFilesCount = diffs.size, checkpointCount = latest) }
+    }
+
     fun requestStop() {
         stopFlag = true
-        _console.update { it.copy(stopRequested = true) }
+        pendingApprovalDeferred?.complete(ApprovalDecision.Deny("Stopped by operator"))
+        _console.update { it.copy(stopRequested = true, pendingApproval = null) }
         syncBackgroundKeepAlive()
     }
 
     fun forceCancelTurn() {
         stopFlag = true
+        pendingApprovalDeferred?.complete(ApprovalDecision.Deny("Force stopped by operator"))
+        pendingApprovalDeferred = null
         val job = activeRunJob
         activeRunJob = null
         job?.cancel()
-        _console.update { it.copy(busy = false, stopRequested = false, queuedPrompts = emptyList()) }
+        flushPendingStreams()
+        _console.update { it.copy(busy = false, isStreaming = false, stopRequested = false, queuedPrompts = emptyList(), pendingApproval = null) }
         syncBackgroundKeepAlive()
     }
 
@@ -623,11 +1140,116 @@ class BorerSessionController(
             runDb.artifactDao().deleteByRun(id)
             runDb.findingDao().deleteByRun(id)
             runDb.jobDao().deleteByRun(id)
+            runDb.checkpointDao().deleteByRun(id)
             File(runsDir, id).deleteRecursively()
             if (id == _activeRunId.value) {
                 withContext(Dispatchers.Main) { startNewSession() }
             }
         }
+    }
+
+    suspend fun buildSessionMarkdownExport(sessionId: String? = null): String = withContext(Dispatchers.IO) {
+        val targetId = sessionId ?: _console.value.runId
+        val meta = runDb.sessionDao().getSession(targetId)
+        val msgs = SessionFiles.loadMessages(File(runsDir, targetId)).ifEmpty {
+            if (targetId == _console.value.runId) agentSession?.messages?.filter { it.role != "system" }.orEmpty() else emptyList()
+        }
+        val notesList = runDb.noteDao().queryNotesSync(targetId, null, 200)
+        val findingsList = runDb.findingDao().listFindingsSync(targetId)
+
+        buildString {
+            appendLine("# Borer Session Export: $targetId")
+            appendLine()
+            if (meta != null) {
+                appendLine("- **Title:** ${meta.title}")
+                appendLine("- **Model:** ${meta.model} (ctx ${meta.contextWindow})")
+                appendLine("- **Turns:** ${meta.turns} · **Tokens:** prompt=${meta.totalPromptTokens} (cached=${meta.totalCachedTokens}), completion=${meta.totalCompletionTokens}")
+                appendLine("- **Outcome:** ${meta.outcome ?: "active"}")
+                appendLine()
+            }
+            if (findingsList.isNotEmpty()) {
+                appendLine("## Findings (${findingsList.size})")
+                findingsList.forEach { f ->
+                    appendLine("- **[${f.severity.uppercase()}]** ${f.title} (${f.asset})${f.cvss?.let { " · CVSS $it" } ?: ""}")
+                }
+                appendLine()
+            }
+            if (notesList.isNotEmpty()) {
+                appendLine("## Notes (${notesList.size})")
+                notesList.forEach { n ->
+                    appendLine("### #${n.id} [${n.kind}] ${n.key}")
+                    appendLine(n.body)
+                    appendLine()
+                }
+            }
+            appendLine("## Transcript")
+            appendLine()
+            for (m in msgs) {
+                when (m.role) {
+                    "user" -> {
+                        appendLine("### User")
+                        appendLine(m.content.orEmpty())
+                        appendLine()
+                    }
+                    "assistant" -> {
+                        appendLine("### Assistant")
+                        if (!m.reasoning.isNullOrBlank()) {
+                            appendLine("<details><summary>Reasoning</summary>\n\n${m.reasoning}\n</details>\n")
+                        }
+                        if (!m.toolCalls.isNullOrEmpty()) {
+                            m.toolCalls.forEach { tc ->
+                                appendLine("- Tool Call: `${tc.name}` `${tc.arguments.take(300)}`")
+                            }
+                            appendLine()
+                        }
+                        if (!m.content.isNullOrBlank()) {
+                            appendLine(m.content)
+                            appendLine()
+                        }
+                    }
+                    "tool" -> {
+                        appendLine("**Tool Output (${m.toolCallId}):**")
+                        appendLine("```")
+                        appendLine(m.content.orEmpty().take(4000))
+                        appendLine("```")
+                        appendLine()
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun buildSessionJsonExport(sessionId: String? = null): String = withContext(Dispatchers.IO) {
+        val targetId = sessionId ?: _console.value.runId
+        val meta = runDb.sessionDao().getSession(targetId)
+        val msgs = SessionFiles.loadMessages(File(runsDir, targetId)).ifEmpty {
+            if (targetId == _console.value.runId) agentSession?.messages?.filter { it.role != "system" }.orEmpty() else emptyList()
+        }
+        val root = buildJsonObject {
+            put("runId", targetId)
+            put("exportedAt", Instant.now().toString())
+            meta?.let {
+                put("title", it.title)
+                put("model", it.model)
+                put("turns", it.turns)
+                put("promptTokens", it.totalPromptTokens)
+                put("cachedTokens", it.totalCachedTokens)
+                put("completionTokens", it.totalCompletionTokens)
+            }
+            put("messages", cfgJson.encodeToJsonElement(kotlinx.serialization.builtins.ListSerializer(ChatMessage.serializer()), msgs))
+            val fArr = buildJsonArray {
+                runDb.findingDao().listFindingsSync(targetId).forEach { f ->
+                    add(buildJsonObject {
+                        put("title", f.title)
+                        put("severity", f.severity)
+                        put("asset", f.asset)
+                        f.cvss?.let { put("cvss", it) }
+                    })
+                }
+            }
+            put("findings", fArr)
+        }
+        Json { prettyPrint = true }.encodeToString(root)
     }
 
     fun startHuntQueue(targetsRaw: String, templateRaw: String) {
@@ -641,6 +1263,7 @@ class BorerSessionController(
 
         _huntItems.value = targets.map { HuntQueueItem(target = it) }
         _huntRunning.value = true
+        _console.update { it.copy(busy = true, stopRequested = false) }
         syncBackgroundKeepAlive()
 
         huntJob = scope.launch {
@@ -655,7 +1278,7 @@ class BorerSessionController(
                     val prompt = if (templateRaw.isNotBlank()) {
                         templateRaw.replace("{target}", target)
                     } else {
-                        "Hunt for vulnerabilities in $target. Map the surface, test parameters, verify every suspected issue with a reproducible command, write a report for each confirmed finding, and finish when nothing is left to try."
+                        "Complete this task independently: $target. Gather any necessary context, verify your work with real tools, write a structured summary or report, and finish."
                     }
 
                     var runOutcome: String? = null
@@ -664,10 +1287,12 @@ class BorerSessionController(
                     try {
                         stopFlag = false
                         setRunMode(RunMode.AUTONOMOUS)
+                        // Release busy briefly only to invoke startNewSession cleanly under hunt guard
+                        _console.update { it.copy(busy = false) }
                         startNewSession(runId = runId, taskHint = target)
+                        _console.update { it.copy(busy = true, stopRequested = false) }
                         sessionInitJob?.join()
                         appendEntry(TranscriptEntry.User(UUID.randomUUID().toString(), prompt))
-                        _console.update { it.copy(busy = true, stopRequested = false) }
                         syncBackgroundKeepAlive()
 
                         val res = agentSession?.run(prompt, maxTurns = 200)
@@ -691,17 +1316,17 @@ class BorerSessionController(
                         runOutcome = "error"
                         updateHuntItem(idx) { it.copy(status = HuntItemStatus.FAILED, message = t.message ?: t::class.simpleName) }
                     } finally {
+                        flushPendingStreams()
                         withContext(NonCancellable) {
                             if (agentSession?.messages?.any { it.role == "user" || it.role == "assistant" } == true) {
                                 persistSessionRecord(runOutcome, runSummary, runTurns)
                             }
                         }
-                        _console.update { it.copy(busy = false, stopRequested = false) }
                     }
                 }
             } finally {
                 _huntRunning.value = false
-                _console.update { it.copy(busy = false, stopRequested = false) }
+                _console.update { it.copy(busy = false, isStreaming = false, stopRequested = false) }
                 syncBackgroundKeepAlive()
             }
         }
@@ -710,8 +1335,10 @@ class BorerSessionController(
     fun stopHuntQueue() {
         _huntRunning.value = false
         stopFlag = true
+        pendingApprovalDeferred?.complete(ApprovalDecision.Deny("Hunt stopped"))
         huntJob?.cancel()
-        _console.update { it.copy(busy = false, stopRequested = false) }
+        flushPendingStreams()
+        _console.update { it.copy(busy = false, isStreaming = false, stopRequested = false, pendingApproval = null) }
         syncBackgroundKeepAlive()
     }
 
@@ -811,7 +1438,7 @@ class BorerSessionController(
     fun sliceArtifact(id: String, offset: Int, length: Int): String =
         if (::artifactStore.isInitialized) artifactStore.slice(id, offset, length).orEmpty() else ""
 
-    // --- Memory & Skills & Settings ---
+    // --- Memory, Skills, AGENTS.md & Settings ---
 
     fun addExperience(fingerprint: String, approach: String, outcome: String, worked: Boolean) {
         scope.launch(Dispatchers.IO) {
@@ -835,6 +1462,25 @@ class BorerSessionController(
             val dir = File(workspaceDir, ".borer/skills/$cleanName").apply { mkdirs() }
             File(dir, "SKILL.md").writeText("---\nname: $cleanName\ndescription: $description\n---\n$body\n")
             _skills.value = SkillStore.loadSkills(workspaceDir)
+            applyConfigToIdleSession()
+        }
+    }
+
+    suspend fun loadAgentsMd(): String = withContext(Dispatchers.IO) {
+        val target = findWorkspaceAgentsFile(workspaceDir) ?: File(workspaceDir, "AGENTS.md")
+        if (target.exists() && target.isFile) runCatching { target.readText() }.getOrDefault("") else ""
+    }
+
+    fun saveAgentsMd(content: String) {
+        scope.launch(Dispatchers.IO) {
+            val file = File(workspaceDir, "AGENTS.md")
+            if (content.isBlank()) {
+                if (file.exists()) file.delete()
+            } else {
+                file.writeText(content)
+            }
+            _console.update { it.copy(agentsMdLoaded = findWorkspaceAgentsFile(workspaceDir) != null) }
+            applyConfigToIdleSession()
         }
     }
 
@@ -928,6 +1574,11 @@ class BorerSessionController(
         detectCatalogContextWindows()
     }
 
+    suspend fun fetchProviderModels(profile: ProviderProfile): Result<List<ModelCatalogEntry>> =
+        withContext(Dispatchers.IO) {
+            runCatching { OpenAICompatClient(profile).catalog() }
+        }
+
     fun testProviderConnection(profile: ProviderProfile) {
         if (_providerTesting.value) return
         _providerTesting.value = true
@@ -988,12 +1639,20 @@ class BorerSessionController(
     }
 
     fun updateSettings(transform: (BorerSettings) -> BorerSettings) {
-        val next = transform(_settings.value)
+        val prev = _settings.value
+        val next = transform(prev)
         _settings.value = next
         _config.value = _config.value.copy(settings = next)
         savePersistedSettings(next)
         refreshProotDiagnostics()
         syncBackgroundKeepAlive()
+        if (prev.toolsets != next.toolsets || prev.agentsMdEnabled != next.agentsMdEnabled || prev.agentProfile != next.agentProfile) {
+            _console.update { it.copy(agentProfile = next.agentProfile) }
+            applyConfigToIdleSession()
+        }
+        if (prev.mcpServers != next.mcpServers || prev.shellBackend != next.shellBackend) {
+            syncMcpServersAsync()
+        }
     }
 
     fun resetAllSettingsToDefaults() {
@@ -1003,7 +1662,155 @@ class BorerSessionController(
         savePersistedSettings(def)
         refreshProotDiagnostics()
         syncBackgroundKeepAlive()
+        _console.update { it.copy(agentProfile = def.agentProfile) }
+        applyConfigToIdleSession()
+        syncMcpServersAsync()
     }
+
+    private fun syncMcpServersAsync() {
+        scope.launch(Dispatchers.IO) {
+            mcpManager.syncServers(_settings.value.mcpServers, _settings.value)
+        }
+    }
+
+    fun upsertMcpServer(server: McpServerConfig) {
+        val normalizedId = McpManager.sanitizeToken(server.id.ifBlank { server.name })
+        val clean = server.copy(
+            id = normalizedId,
+            name = server.name.trim().ifBlank { normalizedId },
+            url = server.url.trim(),
+            command = server.command.trim(),
+            repoUrl = server.repoUrl.trim()
+        )
+        updateSettings { s ->
+            val list = s.mcpServers.toMutableList()
+            val idx = list.indexOfFirst { it.id == clean.id }
+            if (idx >= 0) list[idx] = clean else list.add(clean)
+            s.copy(mcpServers = list)
+        }
+    }
+
+    fun deleteMcpServer(serverId: String) {
+        updateSettings { s ->
+            s.copy(mcpServers = s.mcpServers.filterNot { it.id == serverId })
+        }
+    }
+
+    fun toggleMcpServer(serverId: String, enabled: Boolean) {
+        updateSettings { s ->
+            s.copy(mcpServers = s.mcpServers.map { if (it.id == serverId) it.copy(enabled = enabled) else it })
+        }
+    }
+
+    fun connectMcpServer(serverId: String) {
+        scope.launch(Dispatchers.IO) {
+            val s = _settings.value
+            val target = s.mcpServers.firstOrNull { it.id == serverId } ?: return@launch
+            val enabledTarget = if (target.enabled) target else target.copy(enabled = true)
+            if (!target.enabled) {
+                val updated = s.mcpServers.map { if (it.id == serverId) enabledTarget else it }
+                _settings.value = s.copy(mcpServers = updated)
+                _config.value = _config.value.copy(settings = _settings.value)
+                savePersistedSettings(_settings.value)
+            }
+            mcpManager.connectOrReconnect(enabledTarget, _settings.value, _settings.value.mcpServers)
+        }
+    }
+
+    fun disconnectMcpServer(serverId: String) {
+        scope.launch(Dispatchers.IO) {
+            val s = _settings.value
+            val updated = s.mcpServers.map { if (it.id == serverId) it.copy(enabled = false) else it }
+            _settings.value = s.copy(mcpServers = updated)
+            _config.value = _config.value.copy(settings = _settings.value)
+            savePersistedSettings(_settings.value)
+            mcpManager.disconnect(serverId, updated)
+        }
+    }
+
+    fun refreshAllMcpServers() {
+        scope.launch(Dispatchers.IO) {
+            mcpManager.syncServers(_settings.value.mcpServers, _settings.value)
+        }
+    }
+
+    fun installWhsearchPreset() {
+        val existing = _settings.value.mcpServers.firstOrNull { it.id == "whsearch" }
+        val cfg = existing ?: defaultWhsearchMcpServer()
+        if (existing == null) upsertMcpServer(cfg)
+        installGitHubMcpServer(cfg.id)
+    }
+
+    fun installGitHubMcpServer(serverId: String) {
+        if (_mcpInstallingId.value != null) return
+        val cfg = _settings.value.mcpServers.firstOrNull { it.id == serverId } ?: return
+        val repoUrl = cfg.repoUrl.trim()
+        if (repoUrl.isBlank()) {
+            _mcpInstallLog.value = "No GitHub repoUrl configured for '${cfg.name}'."
+            return
+        }
+        _mcpInstallingId.value = serverId
+        _mcpInstallLog.value = "Cloning & setting up $repoUrl..."
+        scope.launch(Dispatchers.IO) {
+            try {
+                val script = McpManager.buildGitHubInstallScript(repoUrl, cfg.id)
+                val res = UbuntuProotRuntime.exec(
+                    context = app,
+                    command = script,
+                    cwd = workspaceDir,
+                    env = mapOf("BORER_WORKDIR" to workspaceDir.absolutePath),
+                    timeoutMs = 300_000L,
+                    stdin = null,
+                    settings = _settings.value
+                )
+                val outLines = res.output.lines()
+                val detectedCmd = outLines.firstOrNull { it.startsWith("[BORER_MCP_CMD]") }
+                    ?.removePrefix("[BORER_MCP_CMD]")?.trim().orEmpty()
+                val detectedArgs = outLines.firstOrNull { it.startsWith("[BORER_MCP_ARGS]") }
+                    ?.removePrefix("[BORER_MCP_ARGS]")?.trim().orEmpty()
+
+                val cleanLog = res.output.ifBlank { "(exit=${res.exitCode})" }
+                _mcpInstallLog.value = cleanLog
+
+                if (res.exitCode == 0 && detectedCmd.isNotBlank()) {
+                    val newCfg = cfg.copy(
+                        enabled = true,
+                        transport = com.example.data.McpTransport.STDIO,
+                        command = detectedCmd,
+                        args = if (detectedArgs.isNotBlank()) listOf(detectedArgs) else emptyList()
+                    )
+                    upsertMcpServer(newCfg)
+                    mcpManager.connectOrReconnect(newCfg, _settings.value, _settings.value.mcpServers)
+                } else if (res.exitCode == 0) {
+                    _mcpInstallLog.value = "$cleanLog\n\nRepo cloned. If it uses a custom entrypoint, set Command & Args in Edit and tap Connect."
+                }
+            } catch (t: Throwable) {
+                _mcpInstallLog.value = "Setup failed: ${t.message}"
+            } finally {
+                _mcpInstallingId.value = null
+            }
+        }
+    }
+
+    fun clearMcpInstallLog() {
+        _mcpInstallLog.value = null
+    }
+
+    fun importMcpServersJson(rawJson: String): Result<Int> {
+        val parsed = McpManager.parseMcpServersJson(rawJson)
+        val imported = parsed.getOrElse { return Result.failure(it) }
+        updateSettings { s ->
+            val merged = s.mcpServers.toMutableList()
+            for (item in imported) {
+                val idx = merged.indexOfFirst { it.id == item.id }
+                if (idx >= 0) merged[idx] = item else merged.add(item)
+            }
+            s.copy(mcpServers = merged)
+        }
+        return Result.success(imported.size)
+    }
+
+    fun exportMcpServersJson(): String = McpManager.exportMcpServersJson(_settings.value.mcpServers)
 
     private fun saveProvidersList(list: List<ProviderProfile>, customized: Boolean) {
         prefs.edit()
@@ -1023,44 +1830,53 @@ class BorerSessionController(
                 providerConfigured = cfg.providers.isNotEmpty(),
                 activeModel = first?.model ?: "unconfigured",
                 contextWindow = window,
-                contextSource = first?.contextSource?.name?.lowercase() ?: "fallback"
+                contextSource = first?.contextSource?.name?.lowercase() ?: "fallback",
+                agentProfile = _settings.value.agentProfile
             )
         }
         syncBackgroundKeepAlive()
-        if (!_console.value.busy) {
+        if (!_console.value.busy && !_huntRunning.value) {
             scope.launch(Dispatchers.IO) {
                 sessionInitJob?.join()
-                if (_console.value.busy || !::toolRegistry.isInitialized || !::toolCtx.isInitialized) return@launch
-                val currentCfg = _config.value
-                val currentFirst = currentCfg.providers.firstOrNull()
-                val currentMsgs = agentSession?.messages?.filter { it.role != "system" }.orEmpty()
-                val currentSkills = _skills.value
-                val fallbackClient = FallbackClient(currentCfg.providers, log) { attempt, delayMs, reason ->
-                    appendInfo("retry $attempt in ${delayMs}ms: $reason")
-                }
-                val extra = listOfNotNull(
-                    SkillStore.skillIndex(currentSkills).takeIf { it.isNotBlank() },
-                    buildMemoryBrief(currentMsgs.firstOrNull { it.role == "user" }?.content).takeIf { it.isNotBlank() }
-                ).joinToString("\n\n").ifBlank { null }
+                sessionMutex.withLock {
+                    if (_console.value.busy || _huntRunning.value || !::toolCtx.isInitialized || !::log.isInitialized) {
+                        return@withLock
+                    }
+                    val currentCfg = _config.value
+                    val currentFirst = currentCfg.providers.firstOrNull()
+                    val currentMsgs = agentSession?.messages?.filter { it.role != "system" }.orEmpty()
+                    val currentSkills = _skills.value
+                    toolRegistry = buildToolRegistry(currentSkills, _settings.value)
+                    val fallbackClient = FallbackClient(currentCfg.providers, log) { attempt, delayMs, reason ->
+                        appendInfo("retry $attempt in ${delayMs}ms: $reason")
+                    }
+                    val extra = listOfNotNull(
+                        SkillStore.skillIndex(currentSkills).takeIf { it.isNotBlank() },
+                        buildMemoryBrief(currentMsgs.firstOrNull { it.role == "user" }?.content).takeIf { it.isNotBlank() }
+                    ).joinToString("\n\n").ifBlank { null }
 
-                val snap = _console.value
-                agentSession = AgentSession(
-                    SessionDeps(
-                        profile = currentFirst,
-                        client = fallbackClient,
-                        contextWindow = fallbackClient.contextWindow,
-                        tools = toolRegistry,
-                        ctx = toolCtx,
-                        settingsProvider = { _settings.value },
-                        log = log,
-                        extraInstructions = extra,
-                        ui = makeUiHooks(),
-                        shouldStop = { stopFlag },
-                        initialMessages = currentMsgs,
-                        initialTotals = snap.totals,
-                        initialContextTokens = snap.contextTokens
+                    val snap = _console.value
+                    agentSession = AgentSession(
+                        SessionDeps(
+                            profile = currentFirst,
+                            client = fallbackClient,
+                            contextWindow = fallbackClient.contextWindow,
+                            tools = toolRegistry,
+                            ctx = toolCtx,
+                            settingsProvider = { _settings.value },
+                            log = log,
+                            extraInstructions = extra,
+                            ui = makeUiHooks(),
+                            shouldStop = { stopFlag },
+                            initialMessages = currentMsgs,
+                            initialTotals = snap.totals,
+                            initialContextTokens = snap.contextTokens,
+                            executionMode = { _console.value.mode.toExecutionMode() },
+                            approvalGate = { call -> requestUserApproval(call) },
+                            toolsProvider = { buildToolRegistry(_skills.value, _settings.value) }
+                        )
                     )
-                )
+                }
             }
         }
     }
@@ -1130,7 +1946,9 @@ class BorerSessionController(
             val id = _console.value.runId
             val existing = runDb.sessionDao().getSession(id)
             val msgs = agentSession?.messages?.filter { it.role != "system" }.orEmpty()
-            val title = msgs.firstOrNull { it.role == "user" }?.content?.take(80) ?: existing?.title ?: "(session)"
+            val title = msgs.firstOrNull { it.role == "user" }?.content?.substringBefore("\n\n<attached-context>")?.take(80)
+                ?: existing?.title
+                ?: "(session)"
             runDb.sessionDao().upsert(
                 SessionEntity(
                     id = id,
@@ -1158,13 +1976,13 @@ class BorerSessionController(
     private fun buildMemoryBrief(task: String?): String {
         val hint = task?.take(40)
         val parts = mutableListOf<String>()
-        val brief = memory.brief(hint)
+        val brief = runCatching { memory.brief(hint) }.getOrDefault("")
         if (brief.isNotBlank()) parts.add("<memory>\n$brief\n</memory>")
         if (!task.isNullOrBlank()) {
             val hostMatch = Regex("\\b([a-z0-9-]+(?:\\.[a-z0-9-]+)+)\\b", RegexOption.IGNORE_CASE).find(task)
             val host = hostMatch?.groupValues?.getOrNull(1)
             if (host != null) {
-                memory.targetHistory(host)?.let { h ->
+                runCatching { memory.targetHistory(host) }.getOrNull()?.let { h ->
                     val inner = listOfNotNull(
                         h.profile.takeIf { it.isNotBlank() }?.let { "stack: $it" },
                         h.findings.takeIf { it.isNotBlank() }?.let { "already found: $it" },
@@ -1177,16 +1995,30 @@ class BorerSessionController(
         return parts.joinToString("\n")
     }
 
-    private fun makeUiHooks(): UiHooks = object : UiHooks {
-        override fun onTurn(turn: Int) {
-            _console.update { it.copy(turn = turn) }
-            syncBackgroundKeepAlive()
+    private fun flushPendingStreams() {
+        val textDelta: String
+        val reasoningDelta: String
+        synchronized(streamLock) {
+            streamFlushJob?.cancel()
+            streamFlushJob = null
+            textDelta = pendingText.toString()
+            reasoningDelta = pendingReasoning.toString()
+            pendingText.setLength(0)
+            pendingReasoning.setLength(0)
         }
+        if (reasoningDelta.isEmpty() && textDelta.isEmpty()) return
 
-        override fun onText(delta: String) {
-            if (delta.isEmpty()) return
-            _console.update { cur ->
-                val list = cur.entries.toMutableList()
+        _console.update { cur ->
+            val list = cur.entries.toMutableList()
+            if (reasoningDelta.isNotEmpty()) {
+                val last = list.lastOrNull()
+                if (last is TranscriptEntry.Reasoning && !last.collapsed) {
+                    list[list.lastIndex] = last.copy(text = last.text + reasoningDelta)
+                } else {
+                    list.add(TranscriptEntry.Reasoning(UUID.randomUUID().toString(), reasoningDelta))
+                }
+            }
+            if (textDelta.isNotEmpty()) {
                 for (i in list.lastIndex downTo 0) {
                     val item = list[i]
                     if (item is TranscriptEntry.Reasoning && !item.collapsed) {
@@ -1197,29 +2029,58 @@ class BorerSessionController(
                 }
                 val last = list.lastOrNull()
                 if (last is TranscriptEntry.Assistant) {
-                    list[list.lastIndex] = last.copy(text = last.text + delta)
+                    list[list.lastIndex] = last.copy(text = last.text + textDelta)
                 } else {
-                    list.add(TranscriptEntry.Assistant(UUID.randomUUID().toString(), delta))
+                    list.add(TranscriptEntry.Assistant(UUID.randomUUID().toString(), textDelta))
                 }
-                cur.copy(entries = list)
+            }
+            cur.copy(entries = list)
+        }
+    }
+
+    private fun scheduleStreamFlushLocked() {
+        if (pendingText.length + pendingReasoning.length >= 256) {
+            streamFlushJob?.cancel()
+            streamFlushJob = null
+            scope.launch(Dispatchers.Main.immediate) { flushPendingStreams() }
+            return
+        }
+        if (streamFlushJob?.isActive == true) return
+        streamFlushJob = scope.launch {
+            delay(50L)
+            flushPendingStreams()
+        }
+    }
+
+    private fun makeUiHooks(): UiHooks = object : UiHooks {
+        override fun onTurn(turn: Int) {
+            _console.update { it.copy(turn = turn) }
+            syncBackgroundKeepAlive()
+        }
+
+        override fun onStreamState(streaming: Boolean) {
+            if (!streaming) flushPendingStreams()
+            _console.update { it.copy(isStreaming = streaming) }
+        }
+
+        override fun onText(delta: String) {
+            if (delta.isEmpty()) return
+            synchronized(streamLock) {
+                pendingText.append(delta)
+                scheduleStreamFlushLocked()
             }
         }
 
         override fun onReasoning(delta: String) {
             if (delta.isEmpty()) return
-            _console.update { cur ->
-                val list = cur.entries.toMutableList()
-                val last = list.lastOrNull()
-                if (last is TranscriptEntry.Reasoning && !last.collapsed) {
-                    list[list.lastIndex] = last.copy(text = last.text + delta)
-                } else {
-                    list.add(TranscriptEntry.Reasoning(UUID.randomUUID().toString(), delta))
-                }
-                cur.copy(entries = list)
+            synchronized(streamLock) {
+                pendingReasoning.append(delta)
+                scheduleStreamFlushLocked()
             }
         }
 
         override fun onToolStart(call: ToolCallRequest) {
+            flushPendingStreams()
             appendEntry(
                 TranscriptEntry.ToolExec(
                     id = UUID.randomUUID().toString(),
@@ -1255,6 +2116,9 @@ class BorerSessionController(
                 }
                 cur.copy(entries = list)
             }
+            if (ok && call.name in setOf("write", "edit", "apply_patch")) {
+                scope.launch(Dispatchers.IO) { refreshCheckpointCounts() }
+            }
             syncBackgroundKeepAlive()
         }
 
@@ -1263,6 +2127,7 @@ class BorerSessionController(
         }
 
         override fun onInfo(text: String) {
+            flushPendingStreams()
             appendInfo(text, isWarn = true)
         }
     }
@@ -1286,7 +2151,8 @@ class BorerSessionController(
                     if (txt.startsWith("[harness]")) {
                         entries.add(TranscriptEntry.Info(UUID.randomUUID().toString(), txt))
                     } else {
-                        entries.add(TranscriptEntry.User(UUID.randomUUID().toString(), txt))
+                        val clean = txt.substringBefore("\n\n<attached-context>")
+                        entries.add(TranscriptEntry.User(UUID.randomUUID().toString(), clean))
                     }
                 }
                 "assistant" -> {

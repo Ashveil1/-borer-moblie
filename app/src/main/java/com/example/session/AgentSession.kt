@@ -1,7 +1,9 @@
 package com.example.session
 
+import com.example.data.AgentProfile
 import com.example.data.BorerSettings
 import com.example.data.EventLog
+import com.example.data.ExecutionMode
 import com.example.data.NotifyConfig
 import com.example.data.ProviderProfile
 import com.example.data.SessionFiles
@@ -13,6 +15,7 @@ import com.example.provider.ToolCallRequest
 import com.example.provider.Usage
 import com.example.tools.ToolContext
 import com.example.tools.ToolRegistry
+import com.example.ui.ApprovalDecision
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
@@ -21,6 +24,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
@@ -33,6 +37,7 @@ interface UiHooks {
     fun onToolEnd(call: ToolCallRequest, ok: Boolean, ms: Long, preview: String) {}
     fun onUsage(usage: Usage, totals: Usage, contextTokens: Int) {}
     fun onInfo(text: String) {}
+    fun onStreamState(streaming: Boolean) {}
 }
 
 data class SessionDeps(
@@ -48,9 +53,13 @@ data class SessionDeps(
     val shouldStop: () -> Boolean = { false },
     val initialMessages: List<ChatMessage> = emptyList(),
     val initialTotals: Usage = Usage(),
-    val initialContextTokens: Int = 0
+    val initialContextTokens: Int = 0,
+    val executionMode: () -> ExecutionMode = { ExecutionMode.AUTONOMOUS },
+    val approvalGate: (suspend (ToolCallRequest) -> ApprovalDecision)? = null,
+    val toolsProvider: (() -> ToolRegistry)? = null
 ) {
     val settings: BorerSettings get() = settingsProvider()
+    val effectiveTools: ToolRegistry get() = toolsProvider?.invoke() ?: tools
 }
 
 data class RunResult(
@@ -73,6 +82,9 @@ class AgentSession(private val deps: SessionDeps) {
     private var finished = false
     private var finishSummary = ""
     private var finishOutcome = "exhausted"
+    private var currentTurn = 0
+    private var lastCallSignature = ""
+    private var repeatedCallStreak = 0
 
     private val toolBytes: Int = deps.tools.defs().sumOf { it.name.length + it.description.length + it.parameters.toString().length + 32 }
 
@@ -81,10 +93,19 @@ class AgentSession(private val deps: SessionDeps) {
         if (deps.initialMessages.isNotEmpty()) {
             messages.addAll(deps.initialMessages.filter { it.role != "system" })
         }
+        deps.ctx.currentTurnProvider = { currentTurn }
         deps.ctx.finish = { summary, outcome ->
             finished = true
             finishSummary = summary
             finishOutcome = outcome ?: "exhausted"
+        }
+    }
+
+    private fun activeToolsForMode(): ToolRegistry {
+        val current = deps.effectiveTools
+        return when (deps.executionMode()) {
+            ExecutionMode.PLAN -> current.filtered { isPlanAllowedTool(it) }
+            ExecutionMode.SUPERVISED, ExecutionMode.AUTONOMOUS -> current
         }
     }
 
@@ -93,6 +114,8 @@ class AgentSession(private val deps: SessionDeps) {
         finishSummary = ""
         finishOutcome = "exhausted"
         consecutiveErrors = 0
+        lastCallSignature = ""
+        repeatedCallStreak = 0
         messages[0] = ChatMessage(role = "system", content = buildSystemPrompt(deps))
         messages.add(ChatMessage(role = "user", content = userMessage))
         deps.log.append("message", mapOf("role" to "user", "bytes" to userMessage.length))
@@ -101,14 +124,18 @@ class AgentSession(private val deps: SessionDeps) {
         while (turns < maxTurns) {
             if (finished) break
             if (deps.shouldStop() || deps.ctx.isCancelled()) {
+                finishOutcome = "stopped"
+                if (finishSummary.isBlank()) finishSummary = "Stopped by operator."
                 deps.ui?.onInfo("stop signal received")
                 break
             }
             turns++
+            currentTurn = turns
             deps.ui?.onTurn(turns)
-            deps.log.append("turn.start", mapOf("turn" to turns, "contextTokens" to contextTokens))
+            deps.log.append("turn.start", mapOf("turn" to turns, "contextTokens" to contextTokens, "mode" to deps.executionMode().wire))
 
-            val (text, reasoning, toolCalls) = completeTurn()
+            val activeTools = activeToolsForMode()
+            val (text, reasoning, toolCalls) = completeTurn(activeTools)
             if (toolCalls.isEmpty()) {
                 messages.add(ChatMessage(role = "assistant", content = text, reasoning = reasoning.takeIf { it.isNotEmpty() }))
                 deps.log.append("message", mapOf("role" to "assistant", "bytes" to text.length, "toolCalls" to 0))
@@ -129,11 +156,51 @@ class AgentSession(private val deps: SessionDeps) {
             )
 
             var turnErrors = 0
-            for (call in toolCalls) {
+            var stoppedMidTurn = false
+            for (callIdx in toolCalls.indices) {
+                val call = toolCalls[callIdx]
+                if (deps.shouldStop() || deps.ctx.isCancelled()) {
+                    stoppedMidTurn = true
+                    for (remIdx in callIdx until toolCalls.size) {
+                        val skipped = toolCalls[remIdx]
+                        val abortedMsg = "error: cancelled by operator before execution"
+                        deps.ui?.onToolEnd(skipped, false, 0, abortedMsg)
+                        deps.log.append("tool.result", mapOf("id" to skipped.id, "name" to skipped.name, "isError" to true, "aborted" to true))
+                        messages.add(ChatMessage(role = "tool", toolCallId = skipped.id, content = abortedMsg))
+                    }
+                    break
+                }
+
                 deps.ui?.onToolStart(call)
                 deps.log.append("tool.call", mapOf("id" to call.id, "name" to call.name, "args" to call.arguments.take(8000)))
+
+                // Enforce Plan mode restriction
+                val modeNow = deps.executionMode()
+                if (modeNow == ExecutionMode.PLAN && !isPlanAllowedTool(call.name)) {
+                    val blockedMsg = "error: blocked in Plan mode — '${call.name}' is restricted. Use read-only tools or propose_plan."
+                    turnErrors++
+                    deps.log.append("tool.denied", mapOf("id" to call.id, "tool" to call.name, "reason" to "plan_mode_readonly"))
+                    deps.ui?.onToolEnd(call, false, 0, blockedMsg)
+                    messages.add(ChatMessage(role = "tool", toolCallId = call.id, content = blockedMsg))
+                    continue
+                }
+
+                // Supervised approval gate for mutating/exec tools
+                val gateFn = deps.approvalGate
+                if (modeNow == ExecutionMode.SUPERVISED && gateFn != null && call.name in RISKY_TOOLS) {
+                    val decision = gateFn(call)
+                    if (decision is ApprovalDecision.Deny) {
+                        val deniedMsg = "error: denied by operator (${decision.reason})"
+                        turnErrors++
+                        deps.log.append("tool.denied", mapOf("id" to call.id, "tool" to call.name, "reason" to decision.reason))
+                        deps.ui?.onToolEnd(call, false, 0, deniedMsg)
+                        messages.add(ChatMessage(role = "tool", toolCallId = call.id, content = deniedMsg))
+                        continue
+                    }
+                }
+
                 val result = withContext(Dispatchers.IO) {
-                    deps.tools.execute(call.name, call.arguments, deps.ctx)
+                    activeTools.execute(call.name, call.arguments, deps.ctx)
                 }
                 if (result.isError) turnErrors++ else consecutiveErrors = 0
                 deps.log.append(
@@ -149,7 +216,24 @@ class AgentSession(private val deps: SessionDeps) {
                 )
                 deps.ui?.onToolEnd(call, !result.isError, result.ms, result.content.take(240).replace('\n', ' '))
                 messages.add(ChatMessage(role = "tool", toolCallId = call.id, content = result.content))
+
+                // Doom-loop circuit breaker check
+                val sig = "${call.name}|${call.arguments.trim().take(240)}|${result.isError}|${result.content.take(120)}"
+                if (sig == lastCallSignature) {
+                    repeatedCallStreak++
+                } else {
+                    lastCallSignature = sig
+                    repeatedCallStreak = 1
+                }
             }
+
+            if (stoppedMidTurn) {
+                finishOutcome = "stopped"
+                if (finishSummary.isBlank()) finishSummary = "Stopped by operator."
+                deps.ui?.onInfo("stop signal received")
+                break
+            }
+
             if (toolCalls.isNotEmpty() && turnErrors == toolCalls.size) {
                 consecutiveErrors += turnErrors
                 val limit = deps.settings.softStopErrors
@@ -159,6 +243,24 @@ class AgentSession(private val deps: SessionDeps) {
                     deps.ui?.onInfo(finishSummary)
                     break
                 }
+            }
+
+            val doomLimit = deps.settings.doomLoopThreshold.coerceAtLeast(2)
+            if (repeatedCallStreak >= doomLimit) {
+                if (repeatedCallStreak >= doomLimit * 2) {
+                    finishOutcome = "blocked"
+                    finishSummary = "Doom-loop circuit breaker stopped session after $repeatedCallStreak identical calls."
+                    deps.ui?.onInfo(finishSummary)
+                    break
+                }
+                messages.add(
+                    ChatMessage(
+                        role = "user",
+                        content = "[harness] doom-loop guard: identical tool call '${toolCalls.lastOrNull()?.name}' repeated $repeatedCallStreak times. Change approach, inspect inputs/errors, or call finish."
+                    )
+                )
+                deps.log.append("doom_loop", mapOf("streak" to repeatedCallStreak, "tool" to (toolCalls.lastOrNull()?.name ?: "")))
+                deps.ui?.onInfo("doom-loop guard triggered ($repeatedCallStreak identical calls)")
             }
 
             maybeNudge()
@@ -186,7 +288,81 @@ class AgentSession(private val deps: SessionDeps) {
         )
     }
 
-    private suspend fun completeTurn(): Triple<String, String, List<ToolCallRequest>> {
+    fun compactNow(force: Boolean = true): CompactResult {
+        if (!force && contextTokens < deps.contextWindow * deps.settings.compactAt) {
+            return CompactResult(compacted = false, droppedMessages = 0, remainingMessages = messages.size)
+        }
+        val groups = groupAtomicTurns(startIndex = 2)
+        val keepGroups = (deps.settings.verbatimTurns / 2).coerceAtLeast(2)
+        if (groups.size <= keepGroups) {
+            if (force) {
+                return CompactResult(compacted = false, droppedMessages = 0, remainingMessages = messages.size)
+            }
+            if (deps.settings.strictContext && contextTokens >= deps.contextWindow) {
+                finishOutcome = "blocked"
+                finishSummary = "Strict context cap reached ($contextTokens/${deps.contextWindow} tokens) with no compactable turns left."
+                deps.ui?.onInfo(finishSummary)
+                return CompactResult(compacted = false, droppedMessages = 0, remainingMessages = messages.size, hitStrictLimit = true)
+            }
+            return CompactResult(compacted = false, droppedMessages = 0, remainingMessages = messages.size)
+        }
+
+        val dropUntilIdx = groups[groups.size - keepGroups].first
+        val droppedCount = (dropUntilIdx - 2).coerceAtLeast(0)
+        if (droppedCount <= 0) {
+            return CompactResult(compacted = false, droppedMessages = 0, remainingMessages = messages.size)
+        }
+
+        // Capture brief summary of dropped actions before folding
+        val droppedSlice = messages.subList(2, dropUntilIdx).toList()
+        val toolsUsed = droppedSlice.flatMap { it.toolCalls.orEmpty() }.groupingBy { it.name }.eachCount()
+        val toolDigest = if (toolsUsed.isNotEmpty()) {
+            "Tools folded: " + toolsUsed.entries.sortedByDescending { it.value }.take(8).joinToString(", ") { "${it.key}×${it.value}" }
+        } else null
+
+        repeat(droppedCount) { messages.removeAt(2) }
+        val digest = deps.ctx.store.digest()
+        val notes = deps.ctx.store.queryNotes(limit = 60).joinToString("\n") { "#${it.id} [${it.kind.wire}] ${it.key}" }
+        val msg = listOfNotNull(
+            "[harness] Earlier turns were folded away to free context ($droppedCount messages compacted). Nothing is lost: the full transcript is on disk and every artifact and note is still reachable.",
+            "State: $digest",
+            toolDigest,
+            notes.takeIf { it.isNotBlank() }?.let { "Existing notes:\n$it" },
+            "Re-read what you need with recall/notes instead of assuming."
+        ).joinToString("\n")
+        messages.add(2, ChatMessage(role = "user", content = msg))
+
+        // Recalculate rough context estimate downward so immediate next check doesn't over-trigger
+        val estimatedChars = messages.sumOf { (it.content?.length ?: 0) + (it.toolCalls?.sumOf { tc -> tc.arguments.length + 24 } ?: 0) }
+        contextTokens = ceil((toolBytes + estimatedChars) / 3.6).toInt().coerceAtLeast(1)
+
+        deps.log.append("compaction", mapOf("droppedMessages" to droppedCount, "contextTokens" to contextTokens, "window" to deps.contextWindow))
+        deps.ui?.onInfo("compacted $droppedCount messages (est. $contextTokens/${deps.contextWindow} tokens)")
+        return CompactResult(compacted = true, droppedMessages = droppedCount, remainingMessages = messages.size)
+    }
+
+    private fun groupAtomicTurns(startIndex: Int): List<IntRange> {
+        if (startIndex > messages.lastIndex) return emptyList()
+        val groups = mutableListOf<IntRange>()
+        var i = startIndex
+        while (i <= messages.lastIndex) {
+            val m = messages[i]
+            if (m.role == "assistant" && !m.toolCalls.isNullOrEmpty()) {
+                var end = i
+                while (end + 1 <= messages.lastIndex && messages[end + 1].role == "tool") {
+                    end++
+                }
+                groups.add(i..end)
+                i = end + 1
+            } else {
+                groups.add(i..i)
+                i++
+            }
+        }
+        return groups
+    }
+
+    private suspend fun completeTurn(activeTools: ToolRegistry): Triple<String, String, List<ToolCallRequest>> {
         val text = StringBuilder()
         val reasoning = StringBuilder()
         var sawUsage = false
@@ -194,7 +370,7 @@ class AgentSession(private val deps: SessionDeps) {
 
         val req = CompletionRequest(
             messages = messages.toList(),
-            tools = deps.tools.defs(),
+            tools = activeTools.defs(),
             maxOutputTokens = deps.profile?.maxOutputTokens ?: 8192,
             temperature = deps.profile?.temperature,
             topP = deps.profile?.topP,
@@ -202,50 +378,55 @@ class AgentSession(private val deps: SessionDeps) {
             reasoningEffort = deps.profile?.reasoningEffort
         )
 
-        deps.client.stream(req).collect { event ->
-            when (event) {
-                is ProviderEvent.Text -> {
-                    text.append(event.delta)
-                    deps.ui?.onText(event.delta)
-                }
-                is ProviderEvent.Reasoning -> {
-                    reasoning.append(event.delta)
-                    if (deps.settings.showReasoning) deps.ui?.onReasoning(event.delta)
-                }
-                is ProviderEvent.ToolCall -> {
-                    val existing = toolCalls[event.index]
-                    if (existing != null) {
-                        toolCalls[event.index] = existing.copy(
-                            id = event.id.ifEmpty { existing.id },
-                            arguments = event.arguments.ifEmpty { existing.arguments },
-                            name = event.name.ifEmpty { existing.name }
-                        )
-                    } else {
-                        toolCalls[event.index] = ToolCallRequest(
-                            id = event.id.ifEmpty { "call_${event.index}_${System.currentTimeMillis()}" },
-                            name = event.name,
-                            arguments = event.arguments
-                        )
+        deps.ui?.onStreamState(true)
+        try {
+            deps.client.stream(req).collect { event ->
+                when (event) {
+                    is ProviderEvent.Text -> {
+                        text.append(event.delta)
+                        deps.ui?.onText(event.delta)
                     }
-                }
-                is ProviderEvent.UsageUpdate -> {
-                    sawUsage = true
-                    val u = event.usage
-                    contextTokens = u.promptTokens
-                    totals += u
-                    deps.log.append(
-                        "usage",
-                        mapOf(
-                            "promptTokens" to u.promptTokens,
-                            "completionTokens" to u.completionTokens,
-                            "cachedTokens" to u.cachedTokens,
-                            "totalTokens" to u.totalTokens
+                    is ProviderEvent.Reasoning -> {
+                        reasoning.append(event.delta)
+                        if (deps.settings.showReasoning) deps.ui?.onReasoning(event.delta)
+                    }
+                    is ProviderEvent.ToolCall -> {
+                        val existing = toolCalls[event.index]
+                        if (existing != null) {
+                            toolCalls[event.index] = existing.copy(
+                                id = event.id.ifEmpty { existing.id },
+                                arguments = event.arguments.ifEmpty { existing.arguments },
+                                name = event.name.ifEmpty { existing.name }
+                            )
+                        } else {
+                            toolCalls[event.index] = ToolCallRequest(
+                                id = event.id.ifEmpty { "call_${event.index}_${System.currentTimeMillis()}" },
+                                name = event.name,
+                                arguments = event.arguments
+                            )
+                        }
+                    }
+                    is ProviderEvent.UsageUpdate -> {
+                        sawUsage = true
+                        val u = event.usage
+                        contextTokens = u.promptTokens
+                        totals += u
+                        deps.log.append(
+                            "usage",
+                            mapOf(
+                                "promptTokens" to u.promptTokens,
+                                "completionTokens" to u.completionTokens,
+                                "cachedTokens" to u.cachedTokens,
+                                "totalTokens" to u.totalTokens
+                            )
                         )
-                    )
-                    deps.ui?.onUsage(u, totals, contextTokens)
+                        deps.ui?.onUsage(u, totals, contextTokens)
+                    }
+                    is ProviderEvent.Done -> Unit
                 }
-                is ProviderEvent.Done -> Unit
             }
+        } finally {
+            deps.ui?.onStreamState(false)
         }
 
         if (!sawUsage) {
@@ -275,10 +456,15 @@ class AgentSession(private val deps: SessionDeps) {
         }
         noProgressTurns++
         if (noProgressTurns > 0 && noProgressTurns % deps.settings.noProgressNudge == 0) {
+            val nudgeText = if (deps.settings.agentProfile == AgentProfile.SECURITY) {
+                "[harness] $noProgressTurns turns without a new note or finding. Current state: $digest. Consider a different signal or call finish with an honest summary."
+            } else {
+                "[harness] $noProgressTurns turns without a recorded note or update. Current state: $digest. Consider trying a different approach or finishing with an honest summary."
+            }
             messages.add(
                 ChatMessage(
                     role = "user",
-                    content = "[harness] $noProgressTurns turns without a new note or finding. Current state: $digest. Consider a different signal or call finish with an honest summary."
+                    content = nudgeText
                 )
             )
             deps.log.append("nudge", mapOf("afterTurns" to noProgressTurns, "digest" to digest))
@@ -286,44 +472,52 @@ class AgentSession(private val deps: SessionDeps) {
     }
 
     private fun maybeCompact(): Boolean {
-        if (contextTokens < deps.contextWindow * deps.settings.compactAt) return false
-        val keep = (deps.settings.verbatimTurns / 2).coerceAtLeast(2)
-        var users = 0
-        var cut = 2
-        for (i in messages.lastIndex downTo 2) {
-            val m = messages[i]
-            if (m.role == "user" && m.content?.startsWith("[harness]") != true) {
-                users++
-                if (users >= keep) {
-                    cut = i
-                    break
-                }
-            }
-        }
-        if (cut <= 2) {
-            if (deps.settings.strictContext && contextTokens >= deps.contextWindow) {
-                finishOutcome = "blocked"
-                finishSummary = "Strict context cap reached ($contextTokens/${deps.contextWindow} tokens) with no compactable turns left."
-                deps.ui?.onInfo(finishSummary)
-                return true
+        val res = compactNow(force = false)
+        return res.hitStrictLimit
+    }
+
+    data class CompactResult(
+        val compacted: Boolean,
+        val droppedMessages: Int,
+        val remainingMessages: Int,
+        val hitStrictLimit: Boolean = false
+    )
+
+    companion object {
+        val PLAN_ALLOWED_TOOLS = setOf(
+            "read", "ls", "glob", "grep",
+            "web_search", "web_fetch",
+            "mcp_resource", "mcp_prompt",
+            "notes", "todo", "recall", "scope", "learn", "skill",
+            "diff", "transform", "propose_plan", "finish"
+        )
+
+        fun isPlanAllowedTool(name: String): Boolean {
+            if (name in PLAN_ALLOWED_TOOLS) return true
+            if (name.startsWith("mcp__")) {
+                val lower = name.lowercase()
+                return lower.contains("search") ||
+                    lower.contains("list") ||
+                    lower.contains("read") ||
+                    lower.contains("get") ||
+                    lower.contains("fetch")
             }
             return false
         }
-        val droppedCount = cut - 2
-        repeat(droppedCount) { messages.removeAt(2) }
-        val digest = deps.ctx.store.digest()
-        val notes = deps.ctx.store.queryNotes(limit = 60).joinToString("\n") { "#${it.id} [${it.kind.wire}] ${it.key}" }
-        val msg = listOfNotNull(
-            "[harness] Earlier turns were folded away to free context. Nothing is lost: the full transcript is on disk and every artifact and note is still reachable.",
-            "State: $digest",
-            notes.takeIf { it.isNotBlank() }?.let { "Existing notes:\n$it" },
-            "Re-read what you need with recall/notes instead of assuming."
-        ).joinToString("\n")
-        messages.add(2, ChatMessage(role = "user", content = msg))
-        deps.log.append("compaction", mapOf("droppedMessages" to droppedCount, "contextTokens" to contextTokens, "window" to deps.contextWindow))
-        deps.ui?.onInfo("compacted $droppedCount messages at $contextTokens/${deps.contextWindow} tokens")
-        return false
+
+        val RISKY_TOOLS = setOf(
+            "bash", "job", "write", "edit", "apply_patch", "http", "net", "verify"
+        )
     }
+}
+
+fun findWorkspaceAgentsFile(workdir: File): File? {
+    val candidates = listOf(
+        File(workdir, "AGENTS.md"),
+        File(workdir, "BORER.md"),
+        File(workdir, ".borer/AGENTS.md")
+    )
+    return candidates.firstOrNull { it.exists() && it.isFile }
 }
 
 fun buildSystemPrompt(deps: SessionDeps): String {
@@ -340,35 +534,112 @@ fun buildSystemPrompt(deps: SessionDeps): String {
         com.example.data.ShellBackend.PROOT_DIRECT -> "Android proot ${s.prootDistro}; bash runs inside Ubuntu rootfs with /workspace bound"
     }
 
-    return listOfNotNull(
-        "You are borer, an autonomous security testing agent running inside workspace ${deps.ctx.workdir.absolutePath} ($runtimeHint).",
-        "",
-        "You are the operator's hands. Their instructions ARE the authorisation: decide yourself which hosts that implies, and go. Do not ask which target to use when the request already contains one.",
-        "Every host on the network is reachable: there is no allowlist, no per-port restriction, no request budget and no soft stop. Produce maximum-impact findings with reproducible proof.",
-        "",
-        "<engagement>",
-        scopeBlock,
-        "</engagement>",
-        "",
+    val modeBlock = when (deps.executionMode()) {
+        ExecutionMode.PLAN -> "Execution Mode: PLAN (read-only). Do NOT modify files or run mutating shell commands; explore and analyze using read-only tools and submit an actionable plan via `propose_plan`."
+        ExecutionMode.SUPERVISED -> if (s.supervisedApprovals) {
+            "Execution Mode: INTERACTIVE CHAT (supervised). Answer conversational questions directly; when mutating files, running shell commands, or calling raw network tools, the operator will approve."
+        } else {
+            "Execution Mode: INTERACTIVE CHAT."
+        }
+        ExecutionMode.AUTONOMOUS -> "Execution Mode: AUTONOMOUS. Execute multi-step planning, implementation, web research, or verification continuously until complete, then call `finish`."
+    }
+
+    val agentsRules = if (s.agentsMdEnabled) {
+        findWorkspaceAgentsFile(deps.ctx.workdir)?.let { file ->
+            runCatching { file.readText().trim().take(12_000) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { txt ->
+                "<workspace-rules file=\"${file.name}\">\n$txt\n</workspace-rules>"
+            }
+        }
+    } else null
+
+    val personaHeader = when (s.agentProfile) {
+        AgentProfile.GENERAL -> listOf(
+            "You are Borer, a capable general-purpose AI assistant and autonomous agent running in workspace ${deps.ctx.workdir.absolutePath} ($runtimeHint).",
+            "",
+            "Adapt naturally to whatever the user asks—conversation, brainstorming, writing, translation, coding, Linux/Android CLI tasks, math, data analysis, or live web research:",
+            "- For normal Q&A, explanations, writing, or quick code snippets that do not need local files or live data, answer directly and clearly without forcing unnecessary tool calls.",
+            "- When a task benefits from local files, shell execution, live web search (`web_search`), reading web pages (`web_fetch`), HTTP APIs (`http`), or multi-step work, use your tools proactively and report only verified results.",
+            "- Reply in the same language as the user (e.g., Thai if the user writes in Thai, English if in English).",
+            "- Never invent file contents, command outputs, tool calls, or citations."
+        )
+        AgentProfile.CODING -> listOf(
+            "You are Borer, an expert software engineering and terminal agent working in workspace ${deps.ctx.workdir.absolutePath} ($runtimeHint).",
+            "",
+            "Engineering workflow:",
+            "- Inspect files and repository structure (`ls`, `glob`, `grep`, `read`) before making assumptions or edits.",
+            "- Prefer clean, surgical changes using `edit` or `apply_patch` (multi-file diffs). File edits automatically create checkpoints for `/diff` and `/undo`.",
+            "- Run builds, linters, or tests via `bash` or `verify` to confirm changes actually work before concluding.",
+            "- Delegate noisy repository searches or independent subtasks via `task` (`explore` or `worker`) to keep main context clean."
+        )
+        AgentProfile.RESEARCH -> listOf(
+            "You are Borer, a thorough research and synthesis agent operating in workspace ${deps.ctx.workdir.absolutePath} ($runtimeHint).",
+            "",
+            "Research workflow:",
+            "- Use `web_search` to discover primary sources and `web_fetch` / `http` to read full pages, documentation, or APIs directly.",
+            "- Cross-check facts across multiple sources, distinguish verified facts from uncertainty, and save key findings in `notes` or `report`.",
+            "- Always include source URLs or workspace references for synthesized claims."
+        )
+        AgentProfile.SECURITY -> listOf(
+            "You are borer, an autonomous security testing agent running inside workspace ${deps.ctx.workdir.absolutePath} ($runtimeHint).",
+            "",
+            "You are the operator's hands. Their instructions ARE the authorisation: decide yourself which hosts that implies, and go. Do not ask which target to use when the request already contains one.",
+            "Every host on the network is reachable: there is no allowlist, no per-port restriction, no request budget and no soft stop. Produce maximum-impact findings with reproducible proof."
+        )
+    }
+
+    val toolsAndMemoryBlock = listOfNotNull(
         "Model: ${deps.profile?.model ?: "unconfigured"}. Context window: ${deps.contextWindow} tokens.",
         "",
-        "You have a shell, file tools, a persistent notes database, artifact storage, HTTP and raw socket clients, and text/data utilities. The full list is in your tool schema.",
+        "Available capabilities (when enabled in tool schema): web search & page reading (`web_search`, `web_fetch`, `http`), external MCP tools/resources/prompts (`mcp__*`, `mcp_resource`, `mcp_prompt`), shell & background jobs (`bash`, `job`), filesystem & patching (`read`, `write`, `edit`, `apply_patch`, `ls`, `glob`, `grep`, `diff`), isolated subagents (`task`), persistent memory & todos (`notes`, `todo`, `learn`, `recall`, `skill`), and structured reports (`report`, `verify`, `transform`).",
         "",
-        "Things that help you work effectively here:",
-        "- facts you write to `notes` survive context compaction, facts you only keep in your head do not",
-        "- large tool outputs are stored as artifacts and referenced by id; `recall` can page, grep and slice them",
-        "- the run directory is on disk, so you can write scripts, logs and PoCs and come back to them",
-        "",
-        "Obey the operator. When the work is done, or when you conclude the target cannot be broken this way, call `finish` with an honest summary.",
-        "",
-        "Output style (always):",
-        "- plain text only. Avoid heavy markdown decoration",
-        "- lists use a plain hyphen and one short line each",
-        "- be terse. Lead with the answer or the finding, then the minimum detail that proves it.",
-        "",
-        deps.extraInstructions?.takeIf { it.isNotBlank() },
-        s.customInstructions.takeIf { it.isNotBlank() }
-    ).joinToString("\n")
+        "Workspace habits:",
+        "- Important facts, preferences, or intermediate results written to `notes` / `todo` survive context compaction.",
+        "- Large tool outputs spill to disk artifacts; use `recall` to page, grep, or slice them without blowing up context.",
+        "- Workspace writes (`write`, `edit`, `apply_patch`) create automatic pre-turn checkpoints so the operator can inspect `/diff` or `/undo`.",
+        "- Use `task` (`explore` or `worker`) for isolated subtasks or noisy exploration.",
+        if (deps.executionMode() == ExecutionMode.AUTONOMOUS) {
+            "- When an autonomous multi-step run is finished or cannot proceed further, call `finish` with an honest summary."
+        } else {
+            "- For conversational turns in Chat mode, answer directly once you have the information needed; you only need `finish` if running a long multi-step autonomous task."
+        }
+    )
+
+    val outputStyleBlock = if (s.agentProfile == AgentProfile.SECURITY) {
+        listOf(
+            "Output style (always):",
+            "- plain text only. Avoid heavy markdown decoration",
+            "- lists use a plain hyphen and one short line each",
+            "- be terse. Lead with the answer or the finding, then the minimum detail that proves it."
+        )
+    } else {
+        listOf(
+            "Output style:",
+            "- Use clear, well-structured Markdown (headings, bullet lists, tables, and language-tagged fenced code blocks when helpful).",
+            "- Be concise and direct for simple questions; thorough and well-organized for complex technical, research, or creative tasks."
+        )
+    }
+
+    val mcpSection = deps.ctx.mcpManager?.buildSystemPromptSection()?.takeIf { it.isNotBlank() }
+
+    return buildList {
+        addAll(personaHeader)
+        add("")
+        add(modeBlock)
+        if (s.agentProfile == AgentProfile.SECURITY || gate.requestsMade > 0 || hosts.isNotBlank()) {
+            add("")
+            add("<session-network>")
+            add(scopeBlock)
+            add("</session-network>")
+        }
+        mcpSection?.let { add(""); add(it) }
+        add("")
+        addAll(toolsAndMemoryBlock)
+        add("")
+        addAll(outputStyleBlock)
+        agentsRules?.let { add(""); add(it) }
+        deps.extraInstructions?.takeIf { it.isNotBlank() }?.let { add(""); add(it) }
+        s.customInstructions.takeIf { it.isNotBlank() }?.let { add(""); add(it) }
+    }.joinToString("\n")
 }
 
 object NotifySender {

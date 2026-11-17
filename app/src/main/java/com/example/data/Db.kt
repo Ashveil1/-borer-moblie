@@ -19,15 +19,18 @@ import kotlinx.serialization.json.Json
 import java.time.Instant
 
 enum class NoteKind(val wire: String) {
+    FACT("fact"),
+    TODO("todo"),
+    PREFERENCE("preference"),
+    PROJECT("project"),
+    REFERENCE("reference"),
+    FINDING("finding"),
     ASSET("asset"),
     ENDPOINT("endpoint"),
     PARAM("param"),
     HYPOTHESIS("hypothesis"),
-    FINDING("finding"),
     CREDENTIAL("credential"),
-    BLOCKED("blocked"),
-    FACT("fact"),
-    TODO("todo");
+    BLOCKED("blocked");
 
     companion object {
         fun fromWire(value: String?): NoteKind =
@@ -118,6 +121,25 @@ data class JobEntity(
     val endedAt: String? = null,
     val exitCode: Int? = null,
     val status: String
+)
+
+@Entity(
+    tableName = "checkpoints",
+    indices = [
+        Index(value = ["runId", "turn"]),
+        Index(value = ["runId", "targetPath", "turn"], unique = true)
+    ]
+)
+data class CheckpointEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val runId: String,
+    val turn: Int,
+    val targetPath: String,
+    val relativePath: String,
+    val existedBefore: Boolean,
+    val snapshotPath: String,
+    val action: String,
+    val createdAt: String
 )
 
 @Dao
@@ -247,15 +269,43 @@ interface JobDao {
     suspend fun deleteByRun(runId: String)
 }
 
+@Dao
+interface CheckpointDao {
+    @Query("SELECT * FROM checkpoints WHERE runId = :runId ORDER BY turn DESC, id DESC")
+    fun observeCheckpoints(runId: String): Flow<List<CheckpointEntity>>
+
+    @Query("SELECT * FROM checkpoints WHERE runId = :runId ORDER BY turn ASC, id ASC")
+    fun listCheckpointsSync(runId: String): List<CheckpointEntity>
+
+    @Query("SELECT * FROM checkpoints WHERE runId = :runId AND turn = :turn AND targetPath = :targetPath LIMIT 1")
+    fun findSync(runId: String, turn: Int, targetPath: String): CheckpointEntity?
+
+    @Query("SELECT MAX(turn) FROM checkpoints WHERE runId = :runId")
+    fun latestTurnSync(runId: String): Int?
+
+    @Query("SELECT * FROM checkpoints WHERE runId = :runId AND turn = :turn ORDER BY id DESC")
+    fun listForTurnSync(runId: String, turn: Int): List<CheckpointEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun insertSync(entity: CheckpointEntity): Long
+
+    @Query("DELETE FROM checkpoints WHERE runId = :runId AND turn = :turn")
+    fun deleteTurnSync(runId: String, turn: Int)
+
+    @Query("DELETE FROM checkpoints WHERE runId = :runId")
+    suspend fun deleteByRun(runId: String)
+}
+
 @Database(
     entities = [
         SessionEntity::class,
         NoteEntity::class,
         ArtifactEntity::class,
         FindingEntity::class,
-        JobEntity::class
+        JobEntity::class,
+        CheckpointEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class RunDatabase : RoomDatabase() {
@@ -264,6 +314,7 @@ abstract class RunDatabase : RoomDatabase() {
     abstract fun artifactDao(): ArtifactDao
     abstract fun findingDao(): FindingDao
     abstract fun jobDao(): JobDao
+    abstract fun checkpointDao(): CheckpointDao
 
     companion object {
         @Volatile
@@ -295,13 +346,39 @@ abstract class RunDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `checkpoints` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` TEXT NOT NULL,
+                        `turn` INTEGER NOT NULL,
+                        `targetPath` TEXT NOT NULL,
+                        `relativePath` TEXT NOT NULL,
+                        `existedBefore` INTEGER NOT NULL,
+                        `snapshotPath` TEXT NOT NULL,
+                        `action` TEXT NOT NULL,
+                        `createdAt` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_checkpoints_runId_turn` ON `checkpoints` (`runId`, `turn`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_checkpoints_runId_targetPath_turn` ON `checkpoints` (`runId`, `targetPath`, `turn`)")
+            }
+        }
+
         fun get(context: Context): RunDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     RunDatabase::class.java,
                     "borer_runs.db"
-                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+                )
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
+                    .also { instance = it }
             }
     }
 }

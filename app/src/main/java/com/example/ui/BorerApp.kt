@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -28,14 +29,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Biotech
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.EditNote
-import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -109,16 +115,17 @@ object SettingsRoute
 private data class DrawerNavItem(
     val route: Any,
     val label: String,
-    val icon: ImageVector,
+    val activeIcon: ImageVector,
+    val inactiveIcon: ImageVector,
     val tag: String
 )
 
 private val drawerNavItems = listOf(
-    DrawerNavItem(ConsoleRoute, "Borer Chat", Icons.Outlined.ChatBubbleOutline, "nav_console"),
-    DrawerNavItem(SessionsRoute, "Sessions & Hunt", Icons.Outlined.History, "nav_sessions"),
-    DrawerNavItem(IntelRoute, "Intel & Reports", Icons.Outlined.FolderOpen, "nav_intel"),
-    DrawerNavItem(LabRoute, "Security Lab", Icons.Outlined.Biotech, "nav_lab"),
-    DrawerNavItem(SettingsRoute, "Settings", Icons.Outlined.Settings, "nav_settings")
+    DrawerNavItem(ConsoleRoute, "Borer Chat", Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome, "nav_console"),
+    DrawerNavItem(SessionsRoute, "Sessions & Batch", Icons.Rounded.History, Icons.Outlined.History, "nav_sessions"),
+    DrawerNavItem(IntelRoute, "Notes & Reports", Icons.Rounded.Bookmarks, Icons.Outlined.Bookmarks, "nav_intel"),
+    DrawerNavItem(LabRoute, "Workspace & Skills", Icons.Rounded.Terminal, Icons.Outlined.Terminal, "nav_lab"),
+    DrawerNavItem(SettingsRoute, "Settings", Icons.Rounded.Tune, Icons.Outlined.Tune, "nav_settings")
 )
 
 @Composable
@@ -267,7 +274,9 @@ fun BorerApp(
                     drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     windowInsets = WindowInsets(0, 0, 0, 0),
-                    modifier = Modifier.width(304.dp)
+                    modifier = Modifier
+                        .fillMaxWidth(0.84f)
+                        .widthIn(max = 304.dp)
                 ) {
                     drawerBody()
                 }
@@ -330,7 +339,7 @@ private fun BorerDrawerContent(
                     .padding(horizontal = 14.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Search,
+                    imageVector = Icons.Rounded.Search,
                     contentDescription = "Search chats",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
@@ -388,10 +397,10 @@ private fun BorerDrawerContent(
                         .testTag("drawer_new_chat_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.EditNote,
+                        imageVector = Icons.Rounded.Add,
                         contentDescription = "New chat",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
@@ -430,7 +439,7 @@ private fun BorerDrawerContent(
                         .testTag(item.tag)
                 ) {
                     Icon(
-                        imageVector = item.icon,
+                        imageVector = if (selected) item.activeIcon else item.inactiveIcon,
                         contentDescription = item.label,
                         tint = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp)
@@ -568,7 +577,11 @@ private fun BorerDrawerContent(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (consoleState.providerConfigured) consoleState.activeModel else "Configure provider",
+                        text = if (consoleState.providerConfigured) {
+                            "${consoleState.activeModel} · ${consoleState.agentProfile.label}"
+                        } else {
+                            "Configure provider · ${consoleState.agentProfile.label}"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

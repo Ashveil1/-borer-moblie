@@ -1,5 +1,6 @@
 package com.example.tools
 
+import com.example.mcp.McpManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
@@ -8,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -18,6 +20,8 @@ import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Base64
@@ -80,7 +84,8 @@ val httpTool = object : Tool {
             "verify_tls" to schemaProp("boolean", "default true"),
             "http2" to schemaProp("boolean", "use HTTP/2 when the scheme is https"),
             "max_body" to schemaProp("number", "bytes to keep before truncating (default 4194304)"),
-            "decompress" to schemaProp("boolean", "default true")
+            "decompress" to schemaProp("boolean", "default true"),
+            "extract_text" to schemaProp("boolean", "strip HTML/scripts into readable plain text when true (default false)")
         ),
         required = listOf("url")
     )
@@ -94,6 +99,7 @@ val httpTool = object : Tool {
         val verifyTls = args["verify_tls"].asBool() ?: true
         val http2 = args["http2"].asBool() ?: false
         val decompress = args["decompress"].asBool() ?: true
+        val extractText = args["extract_text"].asBool() ?: false
         val maxBody = (args["max_body"].asInt() ?: MAX_HTTP_BODY).coerceIn(1, 32 * 1024 * 1024)
 
         val headersMap = linkedMapOf<String, String>()
@@ -187,7 +193,9 @@ val httpTool = object : Tool {
 
                     val location = respHeaders["location"]
                     if (!location.isNullOrBlank() && res.code in 300..399 && hop < maxRedirects) {
-                        url = URI(url).resolve(location).toString()
+                        val resolved = url.toHttpUrlOrNull()?.resolve(location)?.toString()
+                            ?: return@withContext ToolResult("invalid redirect location: $location", isError = true)
+                        url = resolved
                         if (res.code == 303 || ((res.code == 301 || res.code == 302) && method == "POST")) {
                             method = "GET"
                             bodyBytes = null
@@ -197,7 +205,13 @@ val httpTool = object : Tool {
                         continue
                     }
 
-                    val bodyText = finalBytes.toString(Charsets.UTF_8)
+                    val rawBodyText = finalBytes.toString(Charsets.UTF_8)
+                    val bodyText = if (extractText) {
+                        val (title, readable) = htmlToReadableText(rawBodyText)
+                        if (title.isNullOrBlank()) readable else "# $title\n\n$readable"
+                    } else {
+                        rawBodyText
+                    }
                     val (spilledBody, artId) = spill(ctx, bodyText, "http", "$method $url")
                     val content = buildString {
                         appendLine("$method $url")
@@ -315,6 +329,8 @@ val netTool = object : Tool {
             if (note != "connected, no payload") {
                 val input = socket.getInputStream()
                 val buf = ByteArray(4096)
+                val windowCap = if (until.isNullOrEmpty()) 0 else maxOf(until.length * 4, 4096)
+                val untilWindow = StringBuilder()
                 while (out.size() < maxBytes) {
                     val n = try {
                         input.read(buf)
@@ -329,12 +345,18 @@ val netTool = object : Tool {
                     val room = maxBytes - out.size()
                     val take = n.coerceAtMost(room)
                     out.write(buf, 0, take)
+                    if (!until.isNullOrEmpty() && take > 0) {
+                        untilWindow.append(String(buf, 0, take, Charsets.UTF_8))
+                        if (untilWindow.length > windowCap) {
+                            untilWindow.delete(0, untilWindow.length - windowCap)
+                        }
+                        if (untilWindow.indexOf(until) >= 0) {
+                            note = "matched until-pattern"
+                            break
+                        }
+                    }
                     if (out.size() >= maxBytes) {
                         note = "max_bytes reached"
-                        break
-                    }
-                    if (!until.isNullOrEmpty() && out.toByteArray().toString(Charsets.UTF_8).contains(until)) {
-                        note = "matched until-pattern"
                         break
                     }
                 }
@@ -400,4 +422,300 @@ private fun parseHostPort(rawHostPort: String): Pair<String, Int?> {
     } else {
         trimmed.removePrefix("[").removeSuffix("]") to null
     }
+}
+
+val webFetchTool = object : Tool {
+    override val name = "web_fetch"
+    override val description =
+        "Fetch a web page or JSON/text endpoint, following redirects automatically and converting HTML into clean readable text. Ideal for documentation, articles, APIs, and web research."
+    override val parameters: JsonObject = schemaObject(
+        properties = mapOf(
+            "url" to schemaProp("string", "HTTP/HTTPS URL to fetch"),
+            "raw" to schemaProp("boolean", "return raw HTML/response body instead of readable text (default false)"),
+            "timeout_ms" to schemaProp("number", "timeout in milliseconds (default 20000)")
+        ),
+        required = listOf("url")
+    )
+
+    override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
+        var url = args["url"].asStr().orEmpty().trim()
+        if (url.isBlank()) return@withContext ToolResult("error: url is required", isError = true)
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+            url = "https://$url"
+        }
+        val raw = args["raw"].asBool() ?: false
+        val timeoutMs = (args["timeout_ms"].asInt() ?: 20_000).toLong().coerceIn(1000L, 60_000L)
+        val client = buildOkHttp(timeoutMs, verifyTls = true, http2 = true)
+
+        for (hop in 0..5) {
+            val decision = ctx.gate.check(url = url)
+            if (!decision.ok) {
+                return@withContext ToolResult("refused by policy: ${decision.reason}", isError = true)
+            }
+            val started = System.currentTimeMillis()
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (compatible; BorerAgent/1.0)")
+                .header("Accept", "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8")
+                .header("Accept-Encoding", "gzip, deflate")
+                .get()
+                .build()
+            try {
+                client.newCall(req).execute().use { res ->
+                    val location = res.header("location")
+                    if (!location.isNullOrBlank() && res.code in 300..399 && hop < 5) {
+                        val resolved = url.toHttpUrlOrNull()?.resolve(location)?.toString()
+                            ?: return@withContext ToolResult("error: invalid redirect location: $location", isError = true)
+                        url = resolved
+                        continue
+                    }
+                    val rawBytes = readBoundedBytes(res.body?.byteStream(), 2 * 1024 * 1024)
+                    val encoding = res.header("content-encoding")?.lowercase().orEmpty()
+                    val finalBytes = if (rawBytes.isNotEmpty()) decompressPartial(rawBytes, encoding, 2 * 1024 * 1024) else rawBytes
+                    val totalMs = System.currentTimeMillis() - started
+                    val contentType = res.header("content-type")?.lowercase().orEmpty()
+                    val parsedHost = runCatching { URI(url).host }.getOrNull()
+                    parsedHost?.let { ctx.gate.recordSuccess(it) }
+
+                    val respHeaders = linkedMapOf<String, String>()
+                    for (i in 0 until res.headers.size) {
+                        respHeaders[res.headers.name(i).lowercase()] = res.headers.value(i)
+                    }
+                    ctx.log.appendHttp(
+                        method = "GET",
+                        url = url,
+                        requestHeaders = emptyMap(),
+                        status = res.code,
+                        responseHeaders = respHeaders,
+                        bytes = finalBytes.size,
+                        ms = totalMs,
+                        aggression = decision.aggression.wire
+                    )
+
+                    val decoded = finalBytes.toString(Charsets.UTF_8)
+                    val bodyText = if (!raw && (contentType.contains("html") || decoded.contains("<html", ignoreCase = true) || decoded.contains("<body", ignoreCase = true))) {
+                        val (title, readable) = htmlToReadableText(decoded)
+                        if (title.isNullOrBlank()) readable else "# $title\n\n$readable"
+                    } else {
+                        decoded
+                    }
+                    val (spilled, artId) = spill(ctx, bodyText, "web", url)
+                    return@withContext ToolResult(
+                        content = "GET $url\nstatus ${res.code} · ${finalBytes.size}b · ${totalMs}ms\n\n$spilled",
+                        isError = res.code >= 400,
+                        artifactId = artId
+                    )
+                }
+            } catch (t: Throwable) {
+                runCatching { URI(url).host }.getOrNull()?.let { ctx.gate.recordFailure(it) }
+                return@withContext ToolResult("error fetching $url: ${t.message}", isError = true)
+            }
+        }
+        ToolResult("error: too many redirects", isError = true)
+    }
+}
+
+val webSearchTool = object : Tool {
+    override val name = "web_search"
+    override val description =
+        "Search the public web for up-to-date facts, documentation, news, packages, or references. Uses the connected MCP search server (such as github.com/Ashveil1/whsearch) when active, with built-in search fallback."
+    override val parameters: JsonObject = schemaObject(
+        properties = mapOf(
+            "query" to schemaProp("string", "Search query keywords"),
+            "limit" to schemaProp("number", "Max results to return (default 8, max 15)")
+        ),
+        required = listOf("query")
+    )
+
+    override suspend fun run(args: JsonObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
+        val query = args["query"].asStr().orEmpty().trim()
+        if (query.isBlank()) return@withContext ToolResult("error: query is required", isError = true)
+        val limit = (args["limit"].asInt() ?: 8).coerceIn(1, 15)
+
+        val mcpTarget = ctx.mcpManager?.findWebSearchTarget()
+        var mcpFallbackNote: String? = null
+        if (mcpTarget != null) {
+            val (server, tool) = mcpTarget
+            val mappedArgs = McpManager.mapSearchArgs(tool, query, limit)
+            val mcpRes = ctx.mcpManager.callTool(server.config.id, tool.name, mappedArgs, ctx)
+            if (!mcpRes.isError && mcpRes.content.isNotBlank()) {
+                ctx.log.append(
+                    "mcp.web_search",
+                    mapOf("server" to server.config.id, "tool" to tool.name, "query" to query, "ok" to true)
+                )
+                return@withContext ToolResult(
+                    content = "[via MCP ${server.config.id}/${tool.name}]\n${mcpRes.content}",
+                    artifactId = mcpRes.artifactId
+                )
+            }
+            ctx.log.append(
+                "mcp.web_search",
+                mapOf("server" to server.config.id, "tool" to tool.name, "query" to query, "ok" to false, "error" to mcpRes.content.take(200))
+            )
+            mcpFallbackNote = "[MCP ${server.config.id}/${tool.name} unavailable -> built-in fallback: ${mcpRes.content.take(120)}]"
+        }
+
+        val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
+        val searchUrl = "https://html.duckduckgo.com/html/?q=$encoded"
+        val decision = ctx.gate.check(url = searchUrl)
+        if (!decision.ok) {
+            return@withContext ToolResult("refused by policy: ${decision.reason}", isError = true)
+        }
+
+        val client = buildOkHttp(20_000L, verifyTls = true, http2 = true)
+        val req = Request.Builder()
+            .url(searchUrl)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Accept-Encoding", "gzip, deflate")
+            .get()
+            .build()
+
+        val started = System.currentTimeMillis()
+        try {
+            client.newCall(req).execute().use { res ->
+                val rawBytes = readBoundedBytes(res.body?.byteStream(), 1024 * 1024)
+                val encoding = res.header("content-encoding")?.lowercase().orEmpty()
+                val html = (if (rawBytes.isNotEmpty()) decompressPartial(rawBytes, encoding, 1024 * 1024) else rawBytes)
+                    .toString(Charsets.UTF_8)
+                val totalMs = System.currentTimeMillis() - started
+                ctx.gate.recordSuccess("html.duckduckgo.com")
+                ctx.log.appendHttp(
+                    method = "GET",
+                    url = searchUrl,
+                    requestHeaders = emptyMap(),
+                    status = res.code,
+                    responseHeaders = emptyMap(),
+                    bytes = html.length,
+                    ms = totalMs,
+                    aggression = decision.aggression.wire
+                )
+                if (res.code >= 400) {
+                    return@withContext ToolResult("web_search HTTP ${res.code} for \"$query\"", isError = true)
+                }
+
+                val results = parseDuckDuckGoResults(html, limit)
+                if (results.isEmpty()) {
+                    val emptyMsg = "No web search results extracted for \"$query\" (HTTP ${res.code}, ${totalMs}ms). Try rephrasing or use web_fetch/http on a direct URL."
+                    return@withContext ToolResult(listOfNotNull(mcpFallbackNote, emptyMsg).joinToString("\n"))
+                }
+                val formatted = buildString {
+                    mcpFallbackNote?.let { appendLine(it) }
+                    appendLine("Search results for \"$query\" (${results.size} hits, ${totalMs}ms):")
+                    appendLine()
+                    results.forEachIndexed { idx, (title, url, snippet) ->
+                        appendLine("${idx + 1}. $title")
+                        appendLine("   $url")
+                        if (snippet.isNotBlank()) appendLine("   $snippet")
+                    }
+                }.trimEnd()
+                ToolResult(formatted)
+            }
+        } catch (t: Throwable) {
+            ctx.gate.recordFailure("html.duckduckgo.com")
+            val errMsg = "web_search failed for \"$query\": ${t.message}"
+            ToolResult(listOfNotNull(mcpFallbackNote, errMsg).joinToString("\n"), isError = true)
+        }
+    }
+}
+
+private fun readBoundedBytes(stream: java.io.InputStream?, maxBytes: Int): ByteArray {
+    if (stream == null) return ByteArray(0)
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(8192)
+    var total = 0
+    while (total < maxBytes) {
+        val read = stream.read(buf, 0, minOf(buf.size, maxBytes - total))
+        if (read <= 0) break
+        out.write(buf, 0, read)
+        total += read
+    }
+    return out.toByteArray()
+}
+
+private fun decodeHtmlEntities(text: String): String {
+    val named = text
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+    return Regex("&#(x?)([0-9a-fA-F]+);").replace(named) { m ->
+        val radix = if (m.groupValues[1].equals("x", ignoreCase = true)) 16 else 10
+        val code = m.groupValues[2].toIntOrNull(radix)
+        if (code != null && code in 1..0xFFFF) code.toChar().toString() else m.value
+    }
+}
+
+private fun htmlToReadableText(html: String): Pair<String?, String> {
+    val title = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        .find(html)?.groupValues?.get(1)
+        ?.let { decodeHtmlEntities(it).replace(Regex("\\s+"), " ").trim() }
+        ?.takeIf { it.isNotBlank() }
+
+    var cleaned = html
+    val stripTags = listOf("script", "style", "noscript", "svg", "template")
+    for (tag in stripTags) {
+        cleaned = cleaned.replace(
+            Regex("<$tag\\b[^>]*>.*?</$tag>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
+            " "
+        )
+    }
+    cleaned = cleaned
+        .replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), " ")
+        .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("</(p|div|li|tr|h[1-6]|section|article|blockquote|pre)>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("<li\\b[^>]*>", RegexOption.IGNORE_CASE), "- ")
+        .replace(Regex("<[^>]+>"), " ")
+
+    val decoded = decodeHtmlEntities(cleaned)
+    val normalized = decoded.lines()
+        .map { it.replace(Regex("[ \\t\\r]+"), " ").trim() }
+        .joinToString("\n")
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
+    return title to normalized
+}
+
+private fun parseDuckDuckGoResults(html: String, limit: Int): List<Triple<String, String, String>> {
+    val linkRegex = Regex(
+        """<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    )
+    val snippetRegex = Regex(
+        """class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div|span)>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    )
+
+    val links = linkRegex.findAll(html).toList()
+    val snippets = snippetRegex.findAll(html).toList()
+    val out = mutableListOf<Triple<String, String, String>>()
+    for (i in links.indices) {
+        if (out.size >= limit) break
+        val m = links[i]
+        val rawHref = decodeHtmlEntities(m.groupValues[1].trim())
+        val resolvedUrl = resolveDuckDuckGoHref(rawHref)
+        val title = decodeHtmlEntities(m.groupValues[2].replace(Regex("<[^>]+>"), " "))
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (title.isBlank() || resolvedUrl.isBlank()) continue
+        val snippet = snippets.getOrNull(i)?.groupValues?.get(1)
+            ?.let { decodeHtmlEntities(it.replace(Regex("<[^>]+>"), " ")) }
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            .orEmpty()
+        out.add(Triple(title, resolvedUrl, snippet))
+    }
+    return out
+}
+
+private fun resolveDuckDuckGoHref(rawHref: String): String {
+    val normalized = if (rawHref.startsWith("//")) "https:$rawHref" else rawHref
+    val uddgMatch = Regex("[?&]uddg=([^&]+)").find(normalized)
+    if (uddgMatch != null) {
+        runCatching { return URLDecoder.decode(uddgMatch.groupValues[1], Charsets.UTF_8.name()) }
+    }
+    return normalized
 }

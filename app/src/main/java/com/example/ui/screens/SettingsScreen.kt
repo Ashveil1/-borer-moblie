@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -38,17 +39,23 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowDownward
-import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -75,6 +82,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -84,17 +92,26 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.AgentProfile
 import com.example.data.ApiKind
 import com.example.data.ContextSource
+import com.example.data.McpServerConfig
+import com.example.data.McpTransport
 import com.example.data.NotifyConfig
 import com.example.data.ProviderProfile
 import com.example.data.ShellBackend
+import com.example.mcp.McpConnectionStatus
+import com.example.mcp.McpServerState
+import com.example.provider.ModelCatalogEntry
 import com.example.runtime.BackgroundKeepAliveController
 import com.example.runtime.UbuntuProotRuntime
 import com.example.ui.BorerViewModel
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 
 private data class ProviderPreset(
     val label: String,
@@ -149,6 +166,7 @@ fun SettingsScreen(
                 tabs = listOf(
                     "Providers" to "tab_settings_providers",
                     "Runtime" to "tab_settings_runtime",
+                    "MCP" to "tab_settings_mcp",
                     "Agent" to "tab_settings_agent",
                     "Alerts" to "tab_settings_alerts"
                 ),
@@ -160,7 +178,8 @@ fun SettingsScreen(
             when (tabIdx) {
                 0 -> ProvidersSettingsPane(vm, onFeedback = ::showFeedback)
                 1 -> RuntimeSettingsPane(vm, onFeedback = ::showFeedback)
-                2 -> AgentSettingsPane(vm, onFeedback = ::showFeedback)
+                2 -> McpSettingsPane(vm, onFeedback = ::showFeedback)
+                3 -> AgentSettingsPane(vm, onFeedback = ::showFeedback)
                 else -> AlertsSettingsPane(vm, onFeedback = ::showFeedback)
             }
         }
@@ -228,7 +247,7 @@ private fun ProvidersSettingsPane(
                         },
                         modifier = Modifier.testTag("add_provider_button")
                     ) {
-                        Icon(Icons.Outlined.Add, contentDescription = "Add provider", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Rounded.Add, contentDescription = "Add provider", modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Add")
                     }
@@ -394,7 +413,7 @@ private fun ProvidersSettingsPane(
                             enabled = !testing,
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = "Test provider", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Test provider", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Test")
                         }
@@ -408,7 +427,7 @@ private fun ProvidersSettingsPane(
                             },
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Icon(Icons.Outlined.Edit, contentDescription = "Edit provider", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit provider", modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Edit")
                         }
@@ -421,7 +440,7 @@ private fun ProvidersSettingsPane(
                                 },
                                 modifier = Modifier.minimumInteractiveComponentSize()
                             ) {
-                                Icon(Icons.Outlined.ArrowUpward, contentDescription = "Move priority up")
+                                Icon(Icons.Rounded.ArrowUpward, contentDescription = "Move priority up")
                             }
                         }
                         if (idx < cfg.providers.lastIndex) {
@@ -432,7 +451,7 @@ private fun ProvidersSettingsPane(
                                 },
                                 modifier = Modifier.minimumInteractiveComponentSize()
                             ) {
-                                Icon(Icons.Outlined.ArrowDownward, contentDescription = "Move priority down")
+                                Icon(Icons.Rounded.ArrowDownward, contentDescription = "Move priority down")
                             }
                         }
                         IconButton(
@@ -442,7 +461,7 @@ private fun ProvidersSettingsPane(
                             },
                             modifier = Modifier.minimumInteractiveComponentSize()
                         ) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete provider", tint = MaterialTheme.colorScheme.onSurface)
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete provider", tint = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                 }
@@ -488,6 +507,7 @@ private fun ProvidersSettingsPane(
             testing = testing,
             testResult = testResult,
             onTest = { draft -> vm.testProviderConnection(draft) },
+            onFetchModels = { draft -> vm.fetchProviderModels(draft) },
             onDismiss = {
                 vm.clearProviderTestResult()
                 editorOpen = false
@@ -509,6 +529,7 @@ private fun ProviderEditorDialog(
     testing: Boolean,
     testResult: String?,
     onTest: (ProviderProfile) -> Unit,
+    onFetchModels: suspend (ProviderProfile) -> Result<List<ModelCatalogEntry>>,
     onDismiss: () -> Unit,
     onSave: (ProviderProfile) -> Unit
 ) {
@@ -532,6 +553,11 @@ private fun ProviderEditorDialog(
         )
     }
     var showValidation by remember { mutableStateOf(false) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var fetchedModels by remember { mutableStateOf<List<ModelCatalogEntry>>(emptyList()) }
+    var fetchError by remember { mutableStateOf<String?>(null) }
+    var catalogContextMatch by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val scope = rememberCoroutineScope()
 
     val trimmedUrl = baseUrl.trim()
     val parsedUri = runCatching { URI(trimmedUrl) }.getOrNull()
@@ -548,6 +574,7 @@ private fun ProviderEditorDialog(
     val modelError = if (model.isBlank()) "Model ID is required" else null
     val keyError = if (apiKey.isBlank()) "API key is required (use 'ollama' for local)" else null
     val formValid = urlError == null && modelError == null && keyError == null
+    val canQueryCatalog = urlError == null && keyError == null
 
     fun buildDraft(): ProviderProfile {
         val parsedCtx = ctxWindow.trim().toIntOrNull() ?: 0
@@ -557,16 +584,22 @@ private fun ProviderEditorDialog(
                 if (sep <= 0) null
                 else line.substring(0, sep).trim() to line.substring(sep + 1).trim()
             }.filter { it.first.isNotBlank() }.toMap()
+        val trimmedModel = model.trim()
+        val ctxSource = when {
+            parsedCtx > 0 && catalogContextMatch?.first == trimmedModel && catalogContextMatch?.second == parsedCtx -> ContextSource.DETECTED
+            parsedCtx > 0 -> ContextSource.CUSTOM
+            else -> ContextSource.FALLBACK
+        }
 
         return ProviderProfile(
             id = name.trim().ifBlank { "provider" },
             name = name.trim().ifBlank { "provider" },
             baseUrl = trimmedUrl,
-            model = model.trim(),
+            model = trimmedModel,
             apiKey = apiKey.trim(),
             api = apiKind,
             contextWindow = if (parsedCtx > 0) parsedCtx else 0,
-            contextSource = if (parsedCtx > 0) ContextSource.CUSTOM else ContextSource.FALLBACK,
+            contextSource = ctxSource,
             maxOutputTokens = (maxOut.trim().toIntOrNull() ?: 8192).coerceIn(256, 131_072),
             temperature = temp.trim().toDoubleOrNull(),
             topP = topP.trim().toDoubleOrNull(),
@@ -585,7 +618,9 @@ private fun ProviderEditorDialog(
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 SectionHeader(title = "Connection")
                 CleanOutlinedTextField(
@@ -626,7 +661,7 @@ private fun ProviderEditorDialog(
                     trailingIcon = {
                         IconButton(onClick = { showKey = !showKey }) {
                             Icon(
-                                imageVector = if (showKey) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                imageVector = if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
                                 contentDescription = "Toggle API key visibility"
                             )
                         }
@@ -634,9 +669,9 @@ private fun ProviderEditorDialog(
                     modifier = Modifier.fillMaxWidth().testTag("provider_key_input")
                 )
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     CleanOutlinedButton(
@@ -645,6 +680,7 @@ private fun ProviderEditorDialog(
                             if (formValid) onTest(buildDraft())
                         },
                         enabled = !testing,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("provider_dialog_test_button")
                     ) {
                         if (testing) {
@@ -652,9 +688,79 @@ private fun ProviderEditorDialog(
                             Spacer(Modifier.width(6.dp))
                             Text("Testing...")
                         } else {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Test Connection")
+                            Text("Test")
+                        }
+                    }
+
+                    CleanOutlinedButton(
+                        onClick = {
+                            showValidation = true
+                            if (canQueryCatalog) {
+                                fetchingModels = true
+                                fetchError = null
+                                val draft = buildDraft()
+                                scope.launch {
+                                    onFetchModels(draft)
+                                        .onSuccess { list ->
+                                            fetchedModels = list.take(30)
+                                            if (list.isEmpty()) fetchError = "No models returned by /models"
+                                        }
+                                        .onFailure { err ->
+                                            fetchError = err.message ?: err::class.simpleName
+                                        }
+                                    fetchingModels = false
+                                }
+                            }
+                        },
+                        enabled = !fetchingModels,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("provider_fetch_models_button")
+                    ) {
+                        if (fetchingModels) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Fetching...")
+                        } else {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Fetch /models")
+                        }
+                    }
+                }
+
+                if (fetchError != null) {
+                    CleanStatusBadge(text = fetchError!!, emphasizedBorder = true)
+                }
+
+                if (fetchedModels.isNotEmpty()) {
+                    Text(
+                        text = "Detected Models (${fetchedModels.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        fetchedModels.forEach { entry ->
+                            val label = if (entry.context != null && entry.context > 0) {
+                                "${entry.id} (${formatCtx(entry.context)})"
+                            } else {
+                                entry.id
+                            }
+                            CleanFilterPill(
+                                label = label,
+                                selected = model.trim() == entry.id,
+                                onClick = {
+                                    model = entry.id
+                                    if (entry.context != null && entry.context > 0) {
+                                        ctxWindow = entry.context.toString()
+                                        catalogContextMatch = entry.id to entry.context
+                                    }
+                                }
+                            )
                         }
                     }
                 }
@@ -921,7 +1027,7 @@ private fun RuntimeSettingsPane(
                         },
                         modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh proot diagnostics", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh proot diagnostics", modifier = Modifier.size(18.dp))
                     }
                 }
             )
@@ -1027,7 +1133,7 @@ private fun RuntimeSettingsPane(
                                         onFeedback("Copied setup command")
                                     }
                                 ) {
-                                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Copy Cmd")
                                 }
@@ -1043,7 +1149,7 @@ private fun RuntimeSettingsPane(
                                             color = MaterialTheme.colorScheme.onPrimary
                                         )
                                     } else {
-                                        Icon(Icons.Outlined.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(4.dp))
                                         Text("Test Ubuntu")
                                     }
@@ -1072,7 +1178,7 @@ private fun RuntimeSettingsPane(
                                     enabled = !prootTesting,
                                     modifier = Modifier.testTag("test_proot_button")
                                 ) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = "Test direct proot", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Test direct proot", modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
                                     Text(if (prootTesting) "Testing..." else "Test Direct proot")
                                 }
@@ -1121,6 +1227,17 @@ private fun AgentSettingsPane(
     var customInstr by remember(settings.customInstructions) { mutableStateOf(settings.customInstructions) }
     var instrSaved by remember { mutableStateOf(false) }
     var confirmResetAll by remember { mutableStateOf(false) }
+    var agentsDialogOpen by remember { mutableStateOf(false) }
+    var agentsMdText by remember { mutableStateOf("") }
+    var agentsMdLoading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(agentsDialogOpen) {
+        if (agentsDialogOpen) {
+            agentsMdLoading = true
+            agentsMdText = withContext(Dispatchers.IO) { vm.loadAgentsMd() }
+            agentsMdLoading = false
+        }
+    }
 
     LaunchedEffect(instrSaved) {
         if (instrSaved) {
@@ -1137,7 +1254,32 @@ private fun AgentSettingsPane(
             .fillMaxSize()
     ) {
         item {
-            SectionHeader(title = "Behavior")
+            SectionHeader(title = "Agent Persona")
+            HairlineCard {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CleanSegmentedControl(
+                        options = AgentProfile.entries.map { p ->
+                            SegmentTab(p.label, "settings_profile_${p.wire}")
+                        },
+                        selectedIndex = AgentProfile.entries.indexOf(settings.agentProfile).coerceAtLeast(0),
+                        onSelect = { idx ->
+                            AgentProfile.entries.getOrNull(idx)?.let { picked ->
+                                vm.setAgentProfile(picked)
+                                onFeedback("Switched persona to ${picked.label}")
+                            }
+                        }
+                    )
+                    Text(
+                        text = settings.agentProfile.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionHeader(title = "Behavior & Approvals")
             GroupedListCard {
                 GroupedSwitchRow(
                     title = "Show Thought Traces",
@@ -1147,10 +1289,59 @@ private fun AgentSettingsPane(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 GroupedSwitchRow(
+                    title = "Supervised Tool Approvals (Chat mode)",
+                    subtitle = "Ask permission before running shell, file writes/patches, or network tools",
+                    checked = settings.supervisedApprovals,
+                    onCheckedChange = { v -> vm.updateSettings { it.copy(supervisedApprovals = v) } },
+                    testTag = "switch_supervised_approvals"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
                     title = "Default to Autonomous Mode",
                     subtitle = "Start new sessions with the 400-turn autonomous harness",
                     checked = settings.defaultAutonomous,
                     onCheckedChange = { v -> vm.updateSettings { it.copy(defaultAutonomous = v) } }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Load Workspace AGENTS.md",
+                    subtitle = "Inject AGENTS.md / BORER.md project conventions into every run",
+                    checked = settings.agentsMdEnabled,
+                    onCheckedChange = { v -> vm.updateSettings { it.copy(agentsMdEnabled = v) } },
+                    testTag = "switch_agents_md"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text("Workspace AGENTS.md", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Project rules shared across turns and subagents",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    CleanOutlinedButton(
+                        onClick = { agentsDialogOpen = true },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("edit_agents_md_button")
+                    ) {
+                        Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Edit")
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Auto-Compact with Summary",
+                    subtitle = "Synthesize structured handoff summary instead of dropping old turns",
+                    checked = settings.autoCompactWithSummary,
+                    onCheckedChange = { v -> vm.updateSettings { it.copy(autoCompactWithSummary = v) } }
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 GroupedSwitchRow(
@@ -1165,6 +1356,66 @@ private fun AgentSettingsPane(
                     subtitle = "Attach extended request/response details on multi-run verify",
                     checked = settings.bulkEvidence,
                     onCheckedChange = { v -> vm.updateSettings { it.copy(bulkEvidence = v) } }
+                )
+            }
+        }
+
+        item {
+            SectionHeader(title = "Toolset Permissions")
+            GroupedListCard {
+                GroupedSwitchRow(
+                    title = "Shell & Background Jobs",
+                    subtitle = "bash, job (proot Ubuntu / Android sh)",
+                    checked = settings.toolsets.shell,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(shell = v)) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Filesystem & Patching",
+                    subtitle = "read, write, edit, apply_patch, glob, grep, ls, diff",
+                    checked = settings.toolsets.filesystem,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(filesystem = v)) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Web, Network & Verification",
+                    subtitle = "web_search, web_fetch, http, net, verify, mutate",
+                    checked = settings.toolsets.network,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(network = v)) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Isolated Subagents",
+                    subtitle = "task (explore / research / verify child agents)",
+                    checked = settings.toolsets.subagent,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(subagent = v)) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "Cross-Session Memory",
+                    subtitle = "learn & recall ranked technique scores",
+                    checked = settings.toolsets.memory,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(memory = v)) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSwitchRow(
+                    title = "MCP Servers & Tools",
+                    subtitle = "mcp__* dynamic tools, mcp_resource, mcp_prompt, and MCP web_search",
+                    checked = settings.toolsets.mcp,
+                    onCheckedChange = { v ->
+                        vm.updateSettings { it.copy(toolsets = it.toolsets.copy(mcp = v)) }
+                    },
+                    testTag = "switch_toolset_mcp"
                 )
             }
         }
@@ -1194,6 +1445,34 @@ private fun AgentSettingsPane(
                     value = (settings.inlineBudget / 1024).toFloat(),
                     valueRange = 2f..64f,
                     onValueChange = { v -> vm.updateSettings { it.copy(inlineBudget = v.toInt().coerceIn(2, 64) * 1024) } }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSliderRow(
+                    title = "Default shell tool timeout",
+                    valueText = "${settings.defaultToolTimeoutMs / 1000}s",
+                    value = (settings.defaultToolTimeoutMs / 1000L).toFloat(),
+                    valueRange = 30f..300f,
+                    onValueChange = { v ->
+                        vm.updateSettings { it.copy(defaultToolTimeoutMs = v.toLong().coerceIn(30L, 300L) * 1000L) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSliderRow(
+                    title = "Max inline output cap",
+                    valueText = "${settings.maxToolOutputBytes / 1024} KB",
+                    value = (settings.maxToolOutputBytes / 1024).toFloat(),
+                    valueRange = 16f..256f,
+                    onValueChange = { v ->
+                        vm.updateSettings { it.copy(maxToolOutputBytes = v.toInt().coerceIn(16, 256) * 1024) }
+                    }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                GroupedSliderRow(
+                    title = "Doom-loop breaker",
+                    valueText = if (settings.doomLoopThreshold == 0) "Off" else "${settings.doomLoopThreshold} repeats",
+                    value = settings.doomLoopThreshold.toFloat(),
+                    valueRange = 0f..8f,
+                    onValueChange = { v -> vm.updateSettings { it.copy(doomLoopThreshold = v.toInt().coerceIn(0, 8)) } }
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 GroupedSliderRow(
@@ -1284,6 +1563,54 @@ private fun AgentSettingsPane(
                 }
             }
         }
+    }
+
+    if (agentsDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { agentsDialogOpen = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+            title = { Text("Workspace AGENTS.md") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 420.dp)
+                ) {
+                    Text(
+                        "Conventions, build commands, and custom guidelines saved in workspace/AGENTS.md.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (agentsMdLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        CleanOutlinedTextField(
+                            value = agentsMdText,
+                            onValueChange = { agentsMdText = it },
+                            label = "AGENTS.md content",
+                            minLines = 8,
+                            maxLines = 14,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            modifier = Modifier.fillMaxWidth().testTag("agents_md_editor_input")
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                CleanPrimaryButton(
+                    onClick = {
+                        vm.saveAgentsMd(agentsMdText)
+                        agentsDialogOpen = false
+                        onFeedback("Saved AGENTS.md")
+                    },
+                    enabled = !agentsMdLoading
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { agentsDialogOpen = false }) { Text("Cancel") }
+            }
+        )
     }
 
     if (confirmResetAll) {
@@ -1390,7 +1717,7 @@ private fun AlertsSettingsPane(
                         trailingIcon = {
                             IconButton(onClick = { showTgToken = !showTgToken }) {
                                 Icon(
-                                    imageVector = if (showTgToken) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                    imageVector = if (showTgToken) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
                                     contentDescription = "Toggle token visibility"
                                 )
                             }
@@ -1485,6 +1812,854 @@ private fun AlertsSettingsPane(
             }
         )
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun McpSettingsPane(
+    vm: BorerViewModel,
+    onFeedback: (String) -> Unit
+) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val mcpStates by vm.mcpStates.collectAsStateWithLifecycle()
+    val installingId by vm.mcpInstallingId.collectAsStateWithLifecycle()
+    val installLog by vm.mcpInstallLog.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var editorOpen by remember { mutableStateOf(false) }
+    var editingServer by remember { mutableStateOf<McpServerConfig?>(null) }
+    var importDialogOpen by remember { mutableStateOf(false) }
+    var inspectingState by remember { mutableStateOf<McpServerState?>(null) }
+
+    val stateById = remember(mcpStates) { mcpStates.associateBy { it.config.id } }
+    val displayStates = remember(settings.mcpServers, stateById) {
+        settings.mcpServers.map { cfg ->
+            stateById[cfg.id] ?: McpServerState(config = cfg, status = McpConnectionStatus.DISCONNECTED)
+        }
+    }
+    val whsearchState = remember(displayStates) {
+        displayStates.firstOrNull { it.config.id.equals("whsearch", ignoreCase = true) }
+    }
+    val connectedCount = remember(displayStates) {
+        displayStates.count { it.status == McpConnectionStatus.CONNECTED }
+    }
+    val totalToolsCount = remember(displayStates) {
+        displayStates.sumOf { it.tools.size }
+    }
+
+    LazyColumn(
+        contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .widthIn(max = BorerTokens.ScreenMaxWidth)
+            .fillMaxSize()
+            .testTag("mcp_settings_list")
+    ) {
+        item {
+            HairlineCard {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                imageVector = Icons.Rounded.Hub,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text("MCP Servers", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            "$connectedCount/${displayStates.size} connected · $totalToolsCount dynamic tools · HTTP, SSE & Stdio",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    CleanPrimaryButton(
+                        onClick = {
+                            editingServer = null
+                            editorOpen = true
+                        },
+                        modifier = Modifier.testTag("add_mcp_button")
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = "Add MCP server", modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add")
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CleanOutlinedButton(
+                        onClick = { importDialogOpen = true },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("import_mcp_json_button")
+                    ) {
+                        Icon(Icons.Rounded.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Import JSON")
+                    }
+                    CleanOutlinedButton(
+                        onClick = {
+                            val json = vm.exportMcpServersJson()
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("mcpServers JSON", json))
+                            onFeedback("Copied mcpServers JSON")
+                        },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Export JSON")
+                    }
+                    CleanOutlinedButton(
+                        onClick = {
+                            vm.refreshAllMcpServers()
+                            onFeedback("Refreshing enabled MCP servers")
+                        },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("refresh_mcp_button")
+                    ) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Refresh All")
+                    }
+                }
+            }
+        }
+
+        // Featured Ashveil1/whsearch web_search MCP card
+        item {
+            val isInstallingWh = installingId == "whsearch"
+            val whConnected = whsearchState?.status == McpConnectionStatus.CONNECTED
+            HairlineCard(highlighted = whConnected) {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "whsearch · web_search MCP",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    CleanStatusBadge(
+                        text = when {
+                            isInstallingWh -> "INSTALLING"
+                            whConnected -> "ACTIVE"
+                            whsearchState?.status == McpConnectionStatus.CONNECTING -> "CONNECTING"
+                            whsearchState?.status == McpConnectionStatus.ERROR -> "ERROR"
+                            else -> "READY TO SETUP"
+                        },
+                        inverted = whConnected
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "github.com/Ashveil1/whsearch — When connected, Borer automatically routes web_search calls through whsearch MCP (with built-in fallback if offline).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CleanPrimaryButton(
+                        onClick = { vm.installWhsearchPreset() },
+                        enabled = installingId == null,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("install_whsearch_button")
+                    ) {
+                        if (isInstallingWh) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Installing...")
+                        } else {
+                            Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Install from GitHub")
+                        }
+                    }
+
+                    if (whsearchState != null) {
+                        CleanOutlinedButton(
+                            onClick = {
+                                if (whConnected) vm.disconnectMcpServer(whsearchState.config.id)
+                                else vm.connectMcpServer(whsearchState.config.id)
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("connect_whsearch_button")
+                        ) {
+                            Icon(
+                                imageVector = if (whConnected) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (whConnected) "Disconnect" else "Connect")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!installLog.isNullOrBlank()) {
+            item {
+                HairlineCard {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("MCP Setup Output", style = MaterialTheme.typography.titleSmall)
+                        TextButton(onClick = { vm.clearMcpInstallLog() }) {
+                            Text("Dismiss")
+                        }
+                    }
+                    SelectionContainer {
+                        Text(
+                            text = installLog.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.background)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                                .verticalScroll(rememberScrollState())
+                                .padding(10.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (displayStates.isEmpty()) {
+            item {
+                CleanEmptyState(
+                    icon = Icons.Rounded.Hub,
+                    title = "No MCP servers configured",
+                    subtitle = "Tap Add or Import JSON to connect Streamable HTTP, SSE, or Stdio MCP tools, resources, and prompts."
+                )
+            }
+        } else {
+            item {
+                SectionHeader(title = "Configured Servers", trailing = "${displayStates.size} total")
+            }
+            itemsIndexed(displayStates, key = { _, st -> st.config.id }) { _, st ->
+                val cfg = st.config
+                val isConnected = st.status == McpConnectionStatus.CONNECTED
+                val isConnecting = st.status == McpConnectionStatus.CONNECTING
+                val isErr = st.status == McpConnectionStatus.ERROR
+                val isInstalling = installingId == cfg.id
+
+                HairlineCard(
+                    highlighted = isConnected,
+                    modifier = Modifier.testTag("mcp_card_${cfg.id}")
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = cfg.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                CleanStatusBadge(
+                                    text = st.status.name,
+                                    inverted = isConnected,
+                                    emphasizedBorder = isErr
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = buildString {
+                                    append("id=${cfg.id} · ${cfg.transport.label}")
+                                    if (cfg.useForWebSearch) append(" · web_search")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        CleanSwitch(
+                            checked = cfg.enabled,
+                            onCheckedChange = { enabled -> vm.toggleMcpServer(cfg.id, enabled) }
+                        )
+                    }
+
+                    val endpointDesc = when {
+                        cfg.url.isNotBlank() -> cfg.url
+                        cfg.command.isNotBlank() -> "${cfg.command} ${cfg.args.joinToString(" ")}".trim()
+                        cfg.repoUrl.isNotBlank() -> cfg.repoUrl
+                        else -> "No endpoint or command set"
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = endpointDesc,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    if (isConnected) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "${st.tools.size} tools · ${st.resources.size} resources · ${st.prompts.size} prompts" +
+                                (st.protocolVersion?.let { " · MCP $it" }.orEmpty()),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else if (isErr && !st.errorMessage.isNullOrBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = st.errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.height(8.dp))
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        CleanOutlinedButton(
+                            onClick = {
+                                if (isConnected) vm.disconnectMcpServer(cfg.id)
+                                else vm.connectMcpServer(cfg.id)
+                            },
+                            enabled = !isConnecting && !isInstalling,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            if (isConnecting) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(5.dp))
+                                Text("Connecting...")
+                            } else {
+                                Icon(
+                                    imageVector = if (isConnected) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (isConnected) "Disconnect" else "Connect")
+                            }
+                        }
+
+                        CleanOutlinedButton(
+                            onClick = { inspectingState = st },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Rounded.Extension, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Inspect (${st.tools.size})")
+                        }
+
+                        if (cfg.repoUrl.isNotBlank()) {
+                            CleanOutlinedButton(
+                                onClick = { vm.installGitHubMcpServer(cfg.id) },
+                                enabled = installingId == null,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (isInstalling) "Installing..." else "Install")
+                            }
+                        }
+
+                        CleanOutlinedButton(
+                            onClick = {
+                                editingServer = cfg
+                                editorOpen = true
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit MCP server", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Edit")
+                        }
+
+                        IconButton(
+                            onClick = {
+                                vm.deleteMcpServer(cfg.id)
+                                onFeedback("Removed MCP server '${cfg.name}'")
+                            },
+                            modifier = Modifier.minimumInteractiveComponentSize()
+                        ) {
+                            Icon(
+                                Icons.Rounded.DeleteOutline,
+                                contentDescription = "Delete MCP server",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (editorOpen) {
+        McpServerEditorDialog(
+            initial = editingServer,
+            onDismiss = { editorOpen = false },
+            onSave = { server ->
+                vm.upsertMcpServer(server)
+                editorOpen = false
+                onFeedback("Saved MCP '${server.name}'")
+            }
+        )
+    }
+
+    if (importDialogOpen) {
+        McpImportJsonDialog(
+            onDismiss = { importDialogOpen = false },
+            onImport = { raw ->
+                vm.importMcpServersJson(raw).onSuccess { count ->
+                    importDialogOpen = false
+                    onFeedback("Imported $count MCP server(s)")
+                }
+            }
+        )
+    }
+
+    inspectingState?.let { st ->
+        McpInspectDialog(
+            state = st,
+            onDismiss = { inspectingState = null }
+        )
+    }
+}
+
+@Composable
+private fun McpServerEditorDialog(
+    initial: McpServerConfig?,
+    onDismiss: () -> Unit,
+    onSave: (McpServerConfig) -> Unit
+) {
+    var id by remember { mutableStateOf(initial?.id ?: "") }
+    var name by remember { mutableStateOf(initial?.name ?: "") }
+    var enabled by remember { mutableStateOf(initial?.enabled ?: true) }
+    var transport by remember { mutableStateOf(initial?.transport ?: McpTransport.AUTO) }
+    var url by remember { mutableStateOf(initial?.url ?: "") }
+    var command by remember { mutableStateOf(initial?.command ?: "") }
+    var argsRaw by remember { mutableStateOf(initial?.args?.joinToString("\n").orEmpty()) }
+    var repoUrl by remember { mutableStateOf(initial?.repoUrl ?: "") }
+    var useForWebSearch by remember { mutableStateOf(initial?.useForWebSearch ?: false) }
+    var timeoutMs by remember { mutableStateOf((initial?.timeoutMs ?: 30_000L).toString()) }
+    var headersRaw by remember {
+        mutableStateOf(initial?.headers?.entries?.joinToString("\n") { "${it.key}: ${it.value}" }.orEmpty())
+    }
+    var envRaw by remember {
+        mutableStateOf(initial?.env?.entries?.joinToString("\n") { "${it.key}=${it.value}" }.orEmpty())
+    }
+
+    val isHttpLike = transport != McpTransport.STDIO
+    val valid = (name.isNotBlank() || id.isNotBlank()) &&
+        if (transport == McpTransport.STDIO) command.isNotBlank()
+        else (url.isNotBlank() || command.isNotBlank())
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+        title = { Text(if (initial == null) "Add MCP Server" else "Edit MCP Server") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                CleanOutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = "Display Name",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("mcp_name_input")
+                )
+                CleanOutlinedTextField(
+                    value = id,
+                    onValueChange = { id = it },
+                    label = "Server ID (slug, optional)",
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                SectionHeader(title = "Transport")
+                CleanSegmentedControl(
+                    options = listOf(
+                        SegmentTab("Auto", "mcp_tr_auto"),
+                        SegmentTab("HTTP", "mcp_tr_http"),
+                        SegmentTab("SSE", "mcp_tr_sse"),
+                        SegmentTab("Stdio", "mcp_tr_stdio")
+                    ),
+                    selectedIndex = when (transport) {
+                        McpTransport.AUTO -> 0
+                        McpTransport.STREAMABLE_HTTP -> 1
+                        McpTransport.SSE -> 2
+                        McpTransport.STDIO -> 3
+                    },
+                    onSelect = { idx ->
+                        transport = when (idx) {
+                            0 -> McpTransport.AUTO
+                            1 -> McpTransport.STREAMABLE_HTTP
+                            2 -> McpTransport.SSE
+                            else -> McpTransport.STDIO
+                        }
+                    }
+                )
+                if (isHttpLike) {
+                    CleanOutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        label = "Server URL (e.g. https://host/mcp or /sse)",
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth().testTag("mcp_url_input")
+                    )
+                    CleanOutlinedTextField(
+                        value = headersRaw,
+                        onValueChange = { headersRaw = it },
+                        label = "HTTP Headers (Key: Value per line)",
+                        minLines = 2,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                if (transport == McpTransport.STDIO || transport == McpTransport.AUTO) {
+                    CleanOutlinedTextField(
+                        value = command,
+                        onValueChange = { command = it },
+                        label = "Stdio Command (e.g. npx, python3, sh)",
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth().testTag("mcp_cmd_input")
+                    )
+                    CleanOutlinedTextField(
+                        value = argsRaw,
+                        onValueChange = { argsRaw = it },
+                        label = "Args (one argument per line)",
+                        minLines = 2,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    CleanOutlinedTextField(
+                        value = envRaw,
+                        onValueChange = { envRaw = it },
+                        label = "Environment (KEY=VALUE per line)",
+                        minLines = 2,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                CleanOutlinedTextField(
+                    value = repoUrl,
+                    onValueChange = { repoUrl = it },
+                    label = "GitHub Repo URL (optional)",
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                CleanOutlinedTextField(
+                    value = timeoutMs,
+                    onValueChange = { timeoutMs = it },
+                    label = "Timeout (ms)",
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Use as web_search provider", style = MaterialTheme.typography.bodyMedium)
+                    CleanSwitch(checked = useForWebSearch, onCheckedChange = { useForWebSearch = it })
+                }
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Enabled", style = MaterialTheme.typography.bodyMedium)
+                    CleanSwitch(checked = enabled, onCheckedChange = { enabled = it })
+                }
+            }
+        },
+        confirmButton = {
+            CleanPrimaryButton(
+                onClick = {
+                    val headers = headersRaw.lines().mapNotNull { line ->
+                        val i = line.indexOf(':')
+                        if (i <= 0) null else line.substring(0, i).trim() to line.substring(i + 1).trim()
+                    }.filter { it.first.isNotBlank() }.toMap()
+                    val env = envRaw.lines().mapNotNull { line ->
+                        val i = line.indexOf('=')
+                        if (i <= 0) null else line.substring(0, i).trim() to line.substring(i + 1).trim()
+                    }.filter { it.first.isNotBlank() }.toMap()
+                    val parsedArgs = argsRaw.lines().filter { it.isNotEmpty() }
+                    val resolvedId = (id.trim().ifBlank { name.trim() })
+                    onSave(
+                        McpServerConfig(
+                            id = resolvedId,
+                            name = name.trim().ifBlank { resolvedId },
+                            enabled = enabled,
+                            transport = transport,
+                            url = url.trim(),
+                            command = command.trim(),
+                            args = parsedArgs,
+                            env = env,
+                            headers = headers,
+                            repoUrl = repoUrl.trim(),
+                            useForWebSearch = useForWebSearch,
+                            timeoutMs = (timeoutMs.trim().toLongOrNull() ?: 30_000L).coerceIn(3_000L, 120_000L)
+                        )
+                    )
+                },
+                enabled = valid,
+                modifier = Modifier.testTag("mcp_save_button")
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun McpImportJsonDialog(
+    onDismiss: () -> Unit,
+    onImport: (String) -> Result<Int>
+) {
+    var jsonText by remember {
+        mutableStateOf(
+            """
+            {
+              "mcpServers": {
+                "whsearch": {
+                  "command": "whsearch",
+                  "args": [],
+                  "repoUrl": "https://github.com/Ashveil1/whsearch",
+                  "useForWebSearch": true
+                }
+              }
+            }
+            """.trimIndent()
+        )
+    }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+        title = { Text("Import mcpServers JSON") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Paste standard MCP config JSON (Streamable HTTP, SSE, or Stdio).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CleanOutlinedTextField(
+                    value = jsonText,
+                    onValueChange = { jsonText = it; err = null },
+                    label = "mcpServers JSON",
+                    minLines = 7,
+                    maxLines = 14,
+                    isError = err != null,
+                    supportingText = err,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                    modifier = Modifier.fillMaxWidth().testTag("mcp_import_json_input")
+                )
+            }
+        },
+        confirmButton = {
+            CleanPrimaryButton(
+                onClick = {
+                    onImport(jsonText).onFailure { t ->
+                        err = t.message ?: "Invalid JSON"
+                    }
+                },
+                enabled = jsonText.isNotBlank()
+            ) {
+                Text("Import")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun McpInspectDialog(
+    state: McpServerState,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+        title = {
+            Text(
+                text = state.serverName ?: state.config.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Status: ${state.status.name}" +
+                        (state.protocolVersion?.let { " · Protocol $it" }.orEmpty()) +
+                        (state.serverVersion?.let { " · v$it" }.orEmpty()),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!state.instructions.isNullOrBlank()) {
+                    Text(
+                        text = state.instructions,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                SectionHeader(title = "Tools (${state.tools.size})")
+                if (state.tools.isEmpty()) {
+                    Text("No tools exposed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    state.tools.forEach { t ->
+                        val props = (t.inputSchema["properties"] as? JsonObject)?.keys?.joinToString(", ").orEmpty()
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.background)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = t.name,
+                                style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFontFamily)
+                            )
+                            if (props.isNotBlank()) {
+                                Text(
+                                    text = "args: $props",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            if (t.description.isNotBlank()) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = t.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (state.resources.isNotEmpty() || state.resourceTemplates.isNotEmpty()) {
+                    SectionHeader(title = "Resources (${state.resources.size + state.resourceTemplates.size})")
+                    state.resources.forEach { r ->
+                        Text(
+                            text = "${r.uri} — ${r.name}${r.mimeType?.let { " ($it)" }.orEmpty()}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily)
+                        )
+                    }
+                    state.resourceTemplates.forEach { rt ->
+                        Text(
+                            text = "${rt.uriTemplate} — ${rt.name}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (state.prompts.isNotEmpty()) {
+                    SectionHeader(title = "Prompts (${state.prompts.size})")
+                    state.prompts.forEach { p ->
+                        val pArgs = p.arguments.joinToString(", ") { a -> if (a.required) "${a.name}*" else a.name }
+                        Text(
+                            text = "${p.name}($pArgs) — ${p.description}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                if (state.stderrTail.isNotEmpty()) {
+                    SectionHeader(title = "Stderr Tail")
+                    SelectionContainer {
+                        Text(
+                            text = state.stderrTail.joinToString("\n"),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 private fun formatCtx(tokens: Int): String =

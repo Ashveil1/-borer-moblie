@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -29,11 +30,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,7 +80,7 @@ fun LabScreen(
             .imePadding()
     ) {
         CleanScreenTopBar(
-            title = "Security Lab",
+            title = "Workspace & Skills",
             onOpenDrawer = onOpenDrawer,
             trailing = {
                 IconButton(
@@ -87,7 +88,7 @@ fun LabScreen(
                     modifier = Modifier.minimumInteractiveComponentSize().testTag("lab_open_settings_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.Settings,
+                        imageVector = Icons.Rounded.Tune,
                         contentDescription = "Open Settings",
                         tint = MaterialTheme.colorScheme.onSurface
                     )
@@ -148,7 +149,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                         onClick = { showAddExp = true },
                         modifier = Modifier.testTag("add_memory_button")
                     ) {
-                        Icon(Icons.Outlined.Add, contentDescription = "Add experience", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Rounded.Add, contentDescription = "Add experience", modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Record")
                     }
@@ -166,7 +167,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                             .padding(vertical = 20.dp, horizontal = 12.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Psychology,
+                            imageVector = Icons.Rounded.Psychology,
                             contentDescription = "No memory",
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(28.dp)
@@ -206,7 +207,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                             Text(t.steps, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { vm.deleteTechnique(t.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete technique", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete technique", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -244,7 +245,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                             }
                         }
                         IconButton(onClick = { vm.deleteExperience(e.id) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete experience", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete experience", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -273,7 +274,7 @@ private fun MemoryPane(vm: BorerViewModel) {
                             }
                         }
                         IconButton(onClick = { vm.deleteTargetHistory(h.host) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete target", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete target", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -294,7 +295,12 @@ private fun MemoryPane(vm: BorerViewModel) {
             modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Record Experience") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     CleanOutlinedTextField(
                         value = fp,
                         onValueChange = { fp = it },
@@ -612,7 +618,7 @@ private fun SkillsPane(vm: BorerViewModel) {
                     modifier = Modifier.weight(1f)
                 )
                 CleanPrimaryButton(onClick = { showCreate = true }) {
-                    Icon(Icons.Outlined.Add, contentDescription = "Add skill", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.Add, contentDescription = "Add skill", modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("New Skill")
                 }
@@ -628,7 +634,7 @@ private fun SkillsPane(vm: BorerViewModel) {
                             .padding(vertical = 20.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Terminal,
+                            imageVector = Icons.Rounded.Terminal,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(28.dp)
@@ -688,7 +694,11 @@ private fun SkillsPane(vm: BorerViewModel) {
                 }
             },
             text = {
-                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Box(
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     MarkdownProse(text = sk.body)
                 }
             },
@@ -707,7 +717,12 @@ private fun SkillsPane(vm: BorerViewModel) {
             modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
             title = { Text("Create Skill Playbook") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     CleanOutlinedTextField(
                         value = name,
                         onValueChange = { name = it },

@@ -181,7 +181,7 @@ object UbuntuProotRuntime {
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
                 putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0")
             }
-            context.startForegroundService(intent)
+            ContextCompat.startForegroundService(context, intent)
         }
     }
 
@@ -191,8 +191,10 @@ object UbuntuProotRuntime {
         stdin: String?
     ): ShellExecResult = withContext(Dispatchers.IO) {
         val proc = pb.start()
+        val maxCapturedBytes = 8 * 1024 * 1024
         val outputLock = Any()
         val outputBuf = java.io.ByteArrayOutputStream()
+        var truncatedByCap = false
         val readerThread = Thread {
             runCatching {
                 val buf = ByteArray(4096)
@@ -200,7 +202,14 @@ object UbuntuProotRuntime {
                 while (!Thread.currentThread().isInterrupted) {
                     val n = stream.read(buf)
                     if (n < 0) break
-                    if (n > 0) synchronized(outputLock) { outputBuf.write(buf, 0, n) }
+                    if (n > 0) synchronized(outputLock) {
+                        val remaining = maxCapturedBytes - outputBuf.size()
+                        if (remaining > 0) {
+                            outputBuf.write(buf, 0, minOf(n, remaining))
+                        } else if (!truncatedByCap) {
+                            truncatedByCap = true
+                        }
+                    }
                 }
             }
         }.apply {
@@ -229,7 +238,10 @@ object UbuntuProotRuntime {
             if (completed && isActive && !proc.isAlive) {
                 runCatching { stdinThread.join(500) }
                 runCatching { readerThread.join(1_000) }
-                val output = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+                val output = synchronized(outputLock) {
+                    val raw = outputBuf.toString(Charsets.UTF_8.name())
+                    if (truncatedByCap) "$raw\n[output truncated at 8MB limit]" else raw
+                }
                 ShellExecResult(exitCode = proc.exitValue(), output = output, timedOut = false)
             } else {
                 proc.destroyForcibly()
@@ -239,7 +251,10 @@ object UbuntuProotRuntime {
                 stdinThread.interrupt()
                 readerThread.interrupt()
                 runCatching { readerThread.join(200) }
-                val partial = synchronized(outputLock) { outputBuf.toString(Charsets.UTF_8.name()) }
+                val partial = synchronized(outputLock) {
+                    val raw = outputBuf.toString(Charsets.UTF_8.name())
+                    if (truncatedByCap) "$raw\n[output truncated at 8MB limit]" else raw
+                }
                 ShellExecResult(exitCode = null, output = partial, timedOut = true)
             }
         } finally {
@@ -361,12 +376,21 @@ object UbuntuProotRuntime {
             } else {
                 PendingIntent.FLAG_ONE_SHOT
             }
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                requestId.hashCode().absoluteValue,
-                cbIntent,
-                flags
-            )
+            val pendingIntent = runCatching {
+                PendingIntent.getBroadcast(
+                    context,
+                    requestId.hashCode().absoluteValue,
+                    cbIntent,
+                    flags
+                )
+            }.getOrElse {
+                PendingIntent.getBroadcast(
+                    context,
+                    requestId.hashCode().absoluteValue,
+                    cbIntent,
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
 
             val launchIntent = Intent().apply {
                 setClassName(TERMUX_PACKAGE, TERMUX_SERVICE)
@@ -379,7 +403,7 @@ object UbuntuProotRuntime {
             }
 
             try {
-                context.startForegroundService(launchIntent)
+                ContextCompat.startForegroundService(context, launchIntent)
             } catch (t: Throwable) {
                 pendingResults.remove(requestId)
                 return@withContext ShellExecResult(
@@ -426,12 +450,20 @@ object UbuntuProotRuntime {
             "-b", "/proc",
             "-b", "/sys",
             "-b", "${cwd.absolutePath}:/workspace",
-            "-w", "/workspace",
-            "/usr/bin/env",
-            "-i",
-            "HOME=/root",
-            "TERM=dumb",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            "-w", "/workspace"
+        )
+        env["BORER_RUN_DIR"]?.takeIf { it.isNotBlank() }?.let { runDirPath ->
+            args.add("-b")
+            args.add("$runDirPath:$runDirPath")
+        }
+        args.addAll(
+            listOf(
+                "/usr/bin/env",
+                "-i",
+                "HOME=/root",
+                "TERM=dumb",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            )
         )
         env.forEach { (k, v) -> args.add("$k=$v") }
         args.add("/bin/bash")

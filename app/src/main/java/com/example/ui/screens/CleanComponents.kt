@@ -31,8 +31,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -347,7 +347,7 @@ fun CopyActionChip(
             .padding(horizontal = 8.dp, vertical = 5.dp)
     ) {
         Icon(
-            imageVector = if (copied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
+            imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
             contentDescription = "Copy $label",
             tint = if (copied) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(14.dp)
@@ -428,7 +428,7 @@ fun ModernMenuIcon(
     tint: Color = MaterialTheme.colorScheme.onSurface
 ) {
     Column(
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(5.5.dp),
         horizontalAlignment = Alignment.Start,
         modifier = Modifier
             .semantics { this.contentDescription = contentDescription }
@@ -436,16 +436,16 @@ fun ModernMenuIcon(
     ) {
         Box(
             modifier = Modifier
-                .width(18.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(1.dp))
+                .width(19.dp)
+                .height(2.2.dp)
+                .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
         Box(
             modifier = Modifier
-                .width(12.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(1.dp))
+                .width(13.dp)
+                .height(2.2.dp)
+                .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
     }
@@ -479,7 +479,7 @@ fun CleanSegmentBarRich(
             .fillMaxWidth()
             .padding(contentPadding)
     ) {
-        val useScrollable = maxWidth < 360.dp && tabs.size >= 4
+        val useScrollable = tabs.size >= 5 || (maxWidth < 360.dp && tabs.size >= 4)
         Row(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier
@@ -506,7 +506,7 @@ fun CleanSegmentBarRich(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier
-                        .then(if (useScrollable) Modifier.widthIn(min = 84.dp) else Modifier.weight(1f))
+                        .then(if (useScrollable) Modifier.widthIn(min = 68.dp) else Modifier.weight(1f))
                         .height(38.dp)
                         .clip(RoundedCornerShape(BorerTokens.SegmentInnerRadius))
                         .background(bg)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -29,15 +30,15 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.CheckBox
-import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.NoteAlt
-import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.StickyNote2
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -127,7 +128,7 @@ fun IntelScreen(
                     modifier = Modifier.testTag("intel_add_fab")
                 ) {
                     Icon(
-                        Icons.Outlined.Add,
+                        Icons.Rounded.Add,
                         contentDescription = if (tabIdx == 0) "Add finding" else "Add note"
                     )
                 }
@@ -142,15 +143,15 @@ fun IntelScreen(
                 .imePadding()
         ) {
             CleanScreenTopBar(
-                title = "Intel & Reports",
+                title = "Notes & Reports",
                 onOpenDrawer = onOpenDrawer
             )
 
             CleanSegmentBarRich(
                 tabs = listOf(
-                    SegmentTab("Findings", "tab_intel_findings", count = findings.size),
+                    SegmentTab("Reports", "tab_intel_findings", count = findings.size),
                     SegmentTab("Notes", "tab_intel_notes", count = notes.size),
-                    SegmentTab("Audit", "tab_intel_audit", count = httpLogs.size),
+                    SegmentTab("Network", "tab_intel_audit", count = httpLogs.size),
                     SegmentTab("Artifacts", "tab_intel_artifacts", count = artifacts.size)
                 ),
                 selectedIndex = tabIdx,
@@ -228,7 +229,11 @@ fun IntelScreen(
                 }
             },
             text = {
-                Box(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Box(
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     MarkdownProse(text = markdown)
                 }
             },
@@ -256,7 +261,7 @@ private fun FindingsPane(
 ) {
     if (findings.isEmpty()) {
         CleanEmptyState(
-            icon = Icons.Outlined.Description,
+            icon = Icons.Rounded.Description,
             title = "No findings in this run",
             subtitle = "Confirmed issues with CVSS 3.1 scores and Markdown reports appear here.",
             actionLabel = "Add Finding",
@@ -411,7 +416,7 @@ private fun NotesAndTodoPane(
                                 .padding(vertical = 7.dp, horizontal = 4.dp)
                         ) {
                             Icon(
-                                imageVector = if (done) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                                imageVector = if (done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
                                 contentDescription = "Toggle todo",
                                 tint = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
@@ -434,7 +439,7 @@ private fun NotesAndTodoPane(
             CleanOutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = "Search notes") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = "Search notes") },
                 trailingIcon = if (searchQuery.isNotEmpty()) {
                     {
                         IconButton(onClick = { searchQuery = "" }) {
@@ -474,7 +479,7 @@ private fun NotesAndTodoPane(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                            Icons.Outlined.NoteAlt,
+                            Icons.Rounded.StickyNote2,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -501,7 +506,7 @@ private fun NotesAndTodoPane(
                             modifier = Modifier.minimumInteractiveComponentSize()
                         ) {
                             Icon(
-                                Icons.Outlined.Delete,
+                                Icons.Rounded.DeleteOutline,
                                 contentDescription = "Delete note",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -666,7 +671,7 @@ private fun ArtifactsPane(
 ) {
     if (artifacts.isEmpty()) {
         CleanEmptyState(
-            icon = Icons.Outlined.FolderOpen,
+            icon = Icons.Rounded.FolderOpen,
             title = "No spilled artifacts yet",
             subtitle = "Tool outputs exceeding the inline budget are written to disk and listed here for full recall or grep."
         )
@@ -726,7 +731,12 @@ private fun NewFindingDialog(
         modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
         title = { Text("New Finding + CVSS 3.1") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 CleanOutlinedTextField(value = title, onValueChange = { title = it }, label = "Title", singleLine = true, modifier = Modifier.fillMaxWidth())
                 CleanOutlinedTextField(value = asset, onValueChange = { asset = it }, label = "Asset / Endpoint", singleLine = true, modifier = Modifier.fillMaxWidth())
                 CleanOutlinedTextField(
@@ -777,7 +787,12 @@ private fun NewNoteDialog(
         modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
         title = { Text("New Note") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                     NoteKind.entries.filter { it != NoteKind.TODO }.forEach { k ->
                         CleanFilterPill(label = k.wire, selected = kind == k, onClick = { kind = k })
