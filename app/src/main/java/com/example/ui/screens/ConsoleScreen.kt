@@ -351,7 +351,6 @@ fun ConsoleScreen(
             val runtimeLabel = when (settings.shellBackend) {
                 ShellBackend.ANDROID_SH -> "/system/bin/sh"
                 ShellBackend.TERMUX_PROOT -> "Termux proot-distro (${settings.prootDistro})"
-                ShellBackend.PROOT_DIRECT -> "Direct proot (${settings.prootDistro})"
             }
             SessionTelemetrySheet(
                 state = state,

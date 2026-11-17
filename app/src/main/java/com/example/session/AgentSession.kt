@@ -531,7 +531,6 @@ fun buildSystemPrompt(deps: SessionDeps): String {
     val runtimeHint = when (s.shellBackend) {
         com.example.data.ShellBackend.ANDROID_SH -> "Android sandbox; shell runs via /system/bin/sh"
         com.example.data.ShellBackend.TERMUX_PROOT -> "Android Termux proot-distro ${s.prootDistro}; bash runs inside Ubuntu userland"
-        com.example.data.ShellBackend.PROOT_DIRECT -> "Android proot ${s.prootDistro}; bash runs inside Ubuntu rootfs with /workspace bound"
     }
 
     val modeBlock = when (deps.executionMode()) {

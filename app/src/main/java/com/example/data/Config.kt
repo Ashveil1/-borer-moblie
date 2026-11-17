@@ -38,8 +38,7 @@ data class ProviderProfile(
 @Serializable
 enum class ShellBackend(val wire: String, val label: String) {
     ANDROID_SH("android_sh", "Android /system/bin/sh"),
-    TERMUX_PROOT("termux_proot", "Termux proot-distro"),
-    PROOT_DIRECT("proot_direct", "Direct proot");
+    TERMUX_PROOT("termux_proot", "Termux proot-distro");
 
     companion object {
         fun fromWire(value: String?): ShellBackend =

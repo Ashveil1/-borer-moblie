@@ -32,10 +32,7 @@ data class ShellExecResult(
 data class ProotDiagnostics(
     val arch: String,
     val termuxInstalled: Boolean,
-    val termuxPermissionGranted: Boolean,
-    val directProotPath: String?,
-    val directRootfsPath: String?,
-    val directReady: Boolean
+    val termuxPermissionGranted: Boolean
 )
 
 data class TermuxCommandResult(
@@ -96,22 +93,10 @@ object UbuntuProotRuntime {
         val termuxInstalled = isPackageInstalled(context, TERMUX_PACKAGE)
         val permGranted = ContextCompat.checkSelfPermission(context, TERMUX_PERMISSION) ==
             PackageManager.PERMISSION_GRANTED
-        val prootBin = resolveDirectProotBinary(context, settings)
-        val rootfsDir = resolveDirectRootfsDir(context, settings)
-        val validRootfs = rootfsDir?.takeIf { dir ->
-            dir.isDirectory && (
-                File(dir, "bin/bash").exists() ||
-                    File(dir, "usr/bin/bash").exists() ||
-                    File(dir, "bin/sh").exists()
-                )
-        }
         return ProotDiagnostics(
             arch = arch,
             termuxInstalled = termuxInstalled,
-            termuxPermissionGranted = permGranted,
-            directProotPath = prootBin?.absolutePath,
-            directRootfsPath = validRootfs?.absolutePath,
-            directReady = prootBin != null && validRootfs != null
+            termuxPermissionGranted = permGranted
         )
     }
 
@@ -126,7 +111,6 @@ object UbuntuProotRuntime {
     ): ShellExecResult = when (settings.shellBackend) {
         ShellBackend.ANDROID_SH -> execAndroidSh(command, cwd, env, timeoutMs, stdin)
         ShellBackend.TERMUX_PROOT -> execTermuxProot(context, command, env, timeoutMs, stdin, settings.prootDistro)
-        ShellBackend.PROOT_DIRECT -> execDirectProot(context, command, cwd, env, timeoutMs, stdin, settings)
     }
 
     fun buildProcessBuilder(
@@ -142,19 +126,6 @@ object UbuntuProotRuntime {
                     .directory(cwd)
                     .redirectErrorStream(true)
                 env.forEach { (k, v) -> pb.environment()[k] = v }
-                Result.success(pb)
-            }
-            ShellBackend.PROOT_DIRECT -> {
-                val prootBin = resolveDirectProotBinary(context, settings)
-                    ?: return Result.failure(IllegalStateException("no executable proot binary found"))
-                val rootfs = resolveDirectRootfsDir(context, settings)?.takeIf { it.isDirectory }
-                    ?: return Result.failure(IllegalStateException("Ubuntu rootfs not found for distro '${sanitizeDistro(settings.prootDistro)}'"))
-                val prootTmp = File(context.filesDir, "proot-tmp").apply { mkdirs() }
-                val cmdArgs = buildDirectProotCommand(prootBin, rootfs, cwd, command, env)
-                val pb = ProcessBuilder(cmdArgs)
-                    .directory(cwd)
-                    .redirectErrorStream(true)
-                pb.environment()["PROOT_TMP_DIR"] = prootTmp.absolutePath
                 Result.success(pb)
             }
             ShellBackend.TERMUX_PROOT -> {
@@ -432,68 +403,6 @@ object UbuntuProotRuntime {
         } finally {
             pendingResults.remove(requestId)
         }
-    }
-
-    private fun buildDirectProotCommand(
-        prootBin: File,
-        rootfs: File,
-        cwd: File,
-        command: String,
-        env: Map<String, String>
-    ): List<String> {
-        val args = mutableListOf(
-            prootBin.absolutePath,
-            "--link2symlink",
-            "-0",
-            "-r", rootfs.absolutePath,
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/sys",
-            "-b", "${cwd.absolutePath}:/workspace",
-            "-w", "/workspace"
-        )
-        env["BORER_RUN_DIR"]?.takeIf { it.isNotBlank() }?.let { runDirPath ->
-            args.add("-b")
-            args.add("$runDirPath:$runDirPath")
-        }
-        args.addAll(
-            listOf(
-                "/usr/bin/env",
-                "-i",
-                "HOME=/root",
-                "TERM=dumb",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            )
-        )
-        env.forEach { (k, v) -> args.add("$k=$v") }
-        args.add("/bin/bash")
-        args.add("-lc")
-        args.add(command)
-        return args
-    }
-
-    private fun resolveDirectProotBinary(context: Context, settings: BorerSettings): File? {
-        val candidates = buildList {
-            if (settings.prootBinaryPath.isNotBlank()) add(File(settings.prootBinaryPath.trim()))
-            add(File(context.applicationInfo.nativeLibraryDir, "libproot.so"))
-            add(File(context.applicationInfo.nativeLibraryDir, "proot"))
-            add(File("/system/bin/proot"))
-            add(File("/vendor/bin/proot"))
-            add(File("/data/local/tmp/proot"))
-        }
-        return candidates.firstOrNull { it.exists() && it.isFile && it.canExecute() }
-    }
-
-    private fun resolveDirectRootfsDir(context: Context, settings: BorerSettings): File? {
-        val distro = sanitizeDistro(settings.prootDistro)
-        if (settings.prootRootfsPath.isNotBlank()) {
-            return File(settings.prootRootfsPath.trim())
-        }
-        val local = File(context.filesDir, "proot-distro/installed-rootfs/$distro")
-        if (local.isDirectory) return local
-        val ext = context.getExternalFilesDir(null)?.let { File(it, "proot-distro/installed-rootfs/$distro") }
-        if (ext != null && ext.isDirectory) return ext
-        return local
     }
 
     private fun isPackageInstalled(context: Context, packageName: String): Boolean {

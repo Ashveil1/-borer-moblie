@@ -1034,24 +1034,21 @@ private fun RuntimeSettingsPane(
             CleanSegmentedControl(
                 options = listOf(
                     SegmentTab("Android sh", "shell_backend_android"),
-                    SegmentTab("Termux Ubuntu", "shell_backend_termux"),
-                    SegmentTab("Direct proot", "shell_backend_direct")
+                    SegmentTab("Termux Ubuntu", "shell_backend_termux")
                 ),
                 selectedIndex = when (settings.shellBackend) {
                     ShellBackend.ANDROID_SH -> 0
                     ShellBackend.TERMUX_PROOT -> 1
-                    ShellBackend.PROOT_DIRECT -> 2
                 },
                 onSelect = { idx ->
                     when (idx) {
                         0 -> vm.updateSettings { it.copy(shellBackend = ShellBackend.ANDROID_SH) }
-                        1 -> {
+                        else -> {
                             vm.updateSettings { it.copy(shellBackend = ShellBackend.TERMUX_PROOT) }
                             if (diag.termuxInstalled && !diag.termuxPermissionGranted) {
                                 termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION)
                             }
                         }
-                        else -> vm.updateSettings { it.copy(shellBackend = ShellBackend.PROOT_DIRECT) }
                     }
                 }
             )
@@ -1073,20 +1070,6 @@ private fun RuntimeSettingsPane(
                     value = if (diag.termuxPermissionGranted) "Granted" else "Not granted",
                     valueColor = if (diag.termuxPermissionGranted) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (settings.shellBackend == ShellBackend.PROOT_DIRECT) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                    KeyValueStatRow(
-                        label = "proot binary",
-                        value = diag.directProotPath ?: "Not found",
-                        valueColor = if (diag.directProotPath != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                    KeyValueStatRow(
-                        label = "Ubuntu rootfs",
-                        value = diag.directRootfsPath ?: "Not found",
-                        valueColor = if (diag.directRootfsPath != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
         }
 
@@ -1104,83 +1087,53 @@ private fun RuntimeSettingsPane(
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        if (settings.shellBackend == ShellBackend.TERMUX_PROOT) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                if (!diag.termuxPermissionGranted) {
-                                    CleanOutlinedButton(
-                                        onClick = { termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION) }
-                                    ) {
-                                        Text("Grant Permission")
-                                    }
-                                }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (!diag.termuxPermissionGranted) {
                                 CleanOutlinedButton(
-                                    onClick = {
-                                        val err = vm.launchTermuxUbuntuSetup()
-                                        setupNotice = err ?: "Opened Termux to install proot-distro ${settings.prootDistro} and enable external apps."
-                                    }
+                                    onClick = { termuxPermLauncher.launch(UbuntuProotRuntime.TERMUX_PERMISSION) }
                                 ) {
-                                    Text("Install in Termux")
-                                }
-                                CleanOutlinedButton(
-                                    onClick = {
-                                        val cmd = UbuntuProotRuntime.setupScript(settings.prootDistro)
-                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        cm.setPrimaryClip(ClipData.newPlainText("proot-distro setup", cmd))
-                                        setupNotice = "Copied Termux setup command to clipboard."
-                                        onFeedback("Copied setup command")
-                                    }
-                                ) {
-                                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Copy Cmd")
-                                }
-                                CleanPrimaryButton(
-                                    onClick = { vm.testProotUbuntu() },
-                                    enabled = !prootTesting,
-                                    modifier = Modifier.testTag("test_proot_button")
-                                ) {
-                                    if (prootTesting) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                    } else {
-                                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text("Test Ubuntu")
-                                    }
+                                    Text("Grant Permission")
                                 }
                             }
-                        } else {
-                            CleanOutlinedTextField(
-                                value = settings.prootBinaryPath,
-                                onValueChange = { v -> vm.updateSettings { it.copy(prootBinaryPath = v) } },
-                                label = "proot binary path (optional override)",
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            CleanOutlinedTextField(
-                                value = settings.prootRootfsPath,
-                                onValueChange = { v -> vm.updateSettings { it.copy(prootRootfsPath = v) } },
-                                label = "Ubuntu rootfs dir (optional override)",
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                                CleanPrimaryButton(
-                                    onClick = { vm.testProotUbuntu() },
-                                    enabled = !prootTesting,
-                                    modifier = Modifier.testTag("test_proot_button")
-                                ) {
-                                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Test direct proot", modifier = Modifier.size(16.dp))
+                            CleanOutlinedButton(
+                                onClick = {
+                                    val err = vm.launchTermuxUbuntuSetup()
+                                    setupNotice = err ?: "Opened Termux to install proot-distro ${settings.prootDistro} and enable external apps."
+                                }
+                            ) {
+                                Text("Install in Termux")
+                            }
+                            CleanOutlinedButton(
+                                onClick = {
+                                    val cmd = UbuntuProotRuntime.setupScript(settings.prootDistro)
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("proot-distro setup", cmd))
+                                    setupNotice = "Copied Termux setup command to clipboard."
+                                    onFeedback("Copied setup command")
+                                }
+                            ) {
+                                Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy setup command", modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Copy Cmd")
+                            }
+                            CleanPrimaryButton(
+                                onClick = { vm.testProotUbuntu() },
+                                enabled = !prootTesting,
+                                modifier = Modifier.testTag("test_proot_button")
+                            ) {
+                                if (prootTesting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Test Ubuntu runtime", modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(if (prootTesting) "Testing..." else "Test Direct proot")
+                                    Text("Test Ubuntu")
                                 }
                             }
                         }

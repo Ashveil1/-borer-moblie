@@ -174,18 +174,11 @@ class StdioMcpTransport(
             putAll(config.env)
         }
 
-        val pb = if (settings.shellBackend == ShellBackend.PROOT_DIRECT) {
-            val fullCmd = rawArgs.joinToString(" ") { shellQuoteSingle(it) }
-            UbuntuProotRuntime.buildProcessBuilder(context, fullCmd, workdir, envMap, settings).getOrElse { err ->
-                throw McpRpcException(0, "Failed to prepare Direct proot command: ${err.message}")
+        val pb = ProcessBuilder(rawArgs)
+            .directory(workdir)
+            .apply {
+                envMap.forEach { (k, v) -> environment()[k] = v }
             }
-        } else {
-            ProcessBuilder(rawArgs)
-                .directory(workdir)
-                .apply {
-                    envMap.forEach { (k, v) -> environment()[k] = v }
-                }
-        }
 
         val proc = try {
             pb.start()
